@@ -6,6 +6,8 @@
     .dependencies = .{
         // The SpeechToText library itself (this folder is inside it).
         .stt = .{ .path = "../../.." },
+        // iOS build helpers (patched Zig lib dir, signing tool).
+        .TranslateCoreML = .{ .path = "../../../../TranslateCoreML" },
     },
     .paths = .{
         "build.zig",
