@@ -1,0 +1,17 @@
+.{
+    .name = .stt,
+    .version = "0.1.0",
+    .fingerprint = 0xb5cd06cc48bd238b,
+    .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
+    .dependencies = .{
+        // Audio file decoding/encoding (WAV, MP3, QOA): the sibling project.
+        .Audio = .{ .path = "../Audio" },
+        // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK headers.
+        .TranslateNPU = .{ .path = "../TranslateNPU" },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

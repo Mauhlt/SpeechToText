@@ -1,0 +1,15 @@
+.{
+    .name = .npu_dev,
+    .version = "0.0.0",
+    .fingerprint = 0x1a9bd5b60f1ad12,
+    .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
+    .dependencies = .{
+        // The SpeechToText library itself (this folder is inside it).
+        .stt = .{ .path = "../../.." },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "main.zig",
+    },
+}

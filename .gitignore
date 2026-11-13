@@ -1,0 +1,6 @@
+.zig-cache/
+zig-out/
+models/*.bin
+# Personal voice recordings and learned adapter
+profile/
+*.tmp
