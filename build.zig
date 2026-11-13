@@ -15,6 +15,9 @@ pub fn build(b: *std.Build) void {
             // QNN bindings for the laptop NPU path (stt.Local). Building needs
             // the QAIRT SDK headers (see ../TranslateNPU); nothing from the SDK ships.
             .{ .name = "qnn", .module = b.dependency("TranslateNPU", .{ .target = target, .optimize = optimize }).module("qnn") },
+            // Core ML backend (coreml/): MIL writer + reference interpreter on every
+            // OS, Core ML runtime bindings on iOS / macOS (dlopen'd, no link-time frameworks).
+            .{ .name = "coreml", .module = b.dependency("TranslateCoreML", .{ .target = target, .optimize = optimize }).module("coreml") },
         },
     });
 
@@ -96,4 +99,45 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(proto_tests).step);
+
+    // `zig build apple-check`: compile the library with the Core ML backend
+    // for aarch64-ios and aarch64-macos (objects only, no Apple SDK; part of
+    // `zig build test`). iOS uses TranslateCoreML's patched copy of the Zig
+    // lib dir (std.Io.Threaded does not compile for iOS in this Zig).
+    const apple_check = b.step("apple-check", "Compile stt with the Core ML backend for aarch64-ios and aarch64-macos (objects only)");
+    {
+        const coreml_tools = b.dependency("TranslateCoreML", .{});
+        const lib_run = b.addRunArtifact(coreml_tools.artifact("ios-zig-lib"));
+        lib_run.addDirectoryArg(.zig_lib);
+        const ios_lib = lib_run.addOutputDirectoryArg("zig-lib");
+        const checks = [_]struct { name: []const u8, os: std.Target.Os.Tag, min: u32, lib: ?std.Build.LazyPath }{
+            .{ .name = "stt-ios-check", .os = .ios, .min = 17, .lib = ios_lib },
+            .{ .name = "stt-macos-check", .os = .macos, .min = 14, .lib = null },
+        };
+        for (checks) |c| {
+            const t = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = c.os, .os_version_min = .{ .semver = .{ .major = c.min, .minor = 0, .patch = 0 } } });
+            const m = b.createModule(.{
+                .root_source_file = b.path("src/root.zig"),
+                .target = t,
+                .optimize = .Debug,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "Audio", .module = b.dependency("Audio", .{ .target = t }).module("Audio") },
+                    .{ .name = "qnn", .module = b.dependency("TranslateNPU", .{ .target = t, .optimize = .Debug }).module("qnn") },
+                    .{ .name = "coreml", .module = b.dependency("TranslateCoreML", .{ .target = t, .optimize = .Debug }).module("coreml") },
+                },
+            });
+            m.addAnonymousImport("stt_ptx", .{ .root_source_file = wf.getDirectory().path(b, "ptx.zig") });
+            const root = b.createModule(.{
+                .root_source_file = b.path("src/coreml/apple_check.zig"),
+                .target = t,
+                .optimize = .Debug,
+                .link_libc = true,
+                .imports = &.{.{ .name = "stt", .module = m }},
+            });
+            const obj = b.addObject(.{ .name = c.name, .root_module = root, .zig_lib_dir = c.lib });
+            apple_check.dependOn(&obj.step);
+        }
+    }
+    test_step.dependOn(apple_check);
 }

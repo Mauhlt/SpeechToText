@@ -8,6 +8,8 @@
         .Audio = .{ .path = "../Audio" },
         // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK headers.
         .TranslateNPU = .{ .path = "../TranslateNPU" },
+        // Core ML: ML Program writer, host reference interpreter, runtime bindings (iPhone / Mac).
+        .TranslateCoreML = .{ .path = "../TranslateCoreML" },
     },
     .paths = .{
         "build.zig",

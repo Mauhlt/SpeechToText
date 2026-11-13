@@ -4,6 +4,7 @@
 //!
 //!   .cuda   NVIDIA GPU (gpu/engine.zig), the default; the home desktop.
 //!   .npu    Snapdragon X Hexagon NPU through QNN (npu/engine.zig); the laptop.
+//!   .coreml Core ML (coreml/engine.zig): the iPhone / Mac, Neural Engine first.
 //!
 //! Both engines expose the same encode/step/pick interface, and this file's
 //! decoding loop drives either one. There is no CPU fallback (and no CPU
@@ -17,6 +18,7 @@ const Tokenizer = @import("bpe.zig").Tokenizer;
 const Adapter = @import("adapter.zig").Adapter;
 const gpu = @import("gpu/engine.zig");
 const npu = @import("npu/engine.zig");
+const coreml_engine = @import("coreml/engine.zig");
 const Allocator = std.mem.Allocator;
 
 /// Which accelerator runs the model.
@@ -25,6 +27,9 @@ pub const Backend = union(enum) {
     cuda,
     /// Snapdragon X NPU via QNN (the laptop's `stt.Local`).
     npu: npu.Options,
+    /// Core ML (iPhone / Mac: Neural Engine, GPU or CPU as Core ML places
+    /// each op), from ML Programs generated in Zig (coreml/engine.zig).
+    coreml: coreml_engine.Options,
 };
 
 pub const Options = struct {
@@ -43,11 +48,13 @@ pub const Options = struct {
 pub const Engine = union(enum) {
     gpu: *gpu.Engine,
     npu: *npu.Engine,
+    coreml: *coreml_engine.Engine,
 
     pub fn init(gpa: Allocator, model: *const Model, backend: Backend) !Engine {
         return switch (backend) {
             .cuda => .{ .gpu = try gpu.Engine.init(gpa, model) },
             .npu => |o| .{ .npu = try npu.Engine.init(gpa, model, o) },
+            .coreml => |o| .{ .coreml = try coreml_engine.Engine.init(gpa, model, o) },
         };
     }
 
@@ -140,7 +147,7 @@ pub const Transcriber = struct {
     pub fn gpuTiming(self: *const Transcriber) struct { stages: gpu.Timing, upload_ms: f32, weight_mb: usize } {
         const e = switch (self.engine) {
             .gpu => |g| g,
-            .npu => return .{ .stages = .{}, .upload_ms = 0, .weight_mb = 0 },
+            .npu, .coreml => return .{ .stages = .{}, .upload_ms = 0, .weight_mb = 0 },
         };
         return .{ .stages = e.timings(), .upload_ms = e.upload_ms, .weight_mb = e.weight_bytes >> 20 };
     }
