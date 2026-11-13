@@ -75,6 +75,7 @@ same encode / step / pick interface:
 ```zig
 var tr = try stt.Transcriber.init(gpa, &model, .{});                               // .backend = .cuda (default): NVIDIA GPU
 var tr = try stt.Transcriber.init(gpa, &model, .{ .backend = .{ .npu = .{} } });   // Snapdragon X NPU via QNN
+var tr = try stt.Transcriber.init(gpa, &model, .{ .backend = .{ .coreml = .{ .cache_dir = caches } } }); // iPhone / Mac: Core ML (Neural Engine)
 ```
 
 `npu` options: `qnn_dir` (folder with the QNN backend DLLs, null = search),
@@ -297,6 +298,7 @@ Getting data to the GPU:
 | `src/local.zig`         | `Local`: the laptop (transcribe on the NPU, feedback, device-side sync) |
 | `src/local_main.zig`    | `stt-local`: Local behind the JSON-lines protocol for Portal |
 | `src/npu/engine.zig`    | NPU engine (Snapdragon X Hexagon via QNN) |
+| `src/coreml/engine.zig` | Core ML engine (iPhone / Mac Neural Engine), programs from `coreml/net.zig`, host log-mel `coreml/frontend.zig` |
 | `src/schedule.zig`      | training window, status and events |
 | `src/training.zig`      | one training run: collect samples, train, record the version |
 | `src/service.zig`       | transcription + feedback window for Portal clients |
