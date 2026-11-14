@@ -245,14 +245,14 @@ pub fn main(init: std.process.Init) !void {
     const r = &stdin_r.interface;
     const ctx: Ctx = .{ .gpa = gpa, .local = local, .out = &out, .backend = args.backend, .model_id = model_id };
     while (true) {
-        const line = r.takeDelimiter('\n') catch |err| switch (err) {
+        const line = (r.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => {
                 out.fail(0, .bad_request, "line longer than 8 MiB");
                 _ = r.discardDelimiterInclusive('\n') catch break;
                 continue;
             },
             error.ReadFailed => break,
-        } orelse break; // stdin closed: shut down
+        }) orelse break; // stdin closed: shut down
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
         ctx.handle(trimmed);
