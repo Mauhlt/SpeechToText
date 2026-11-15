@@ -19,6 +19,14 @@
             .hash = "translate_npu-0.1.0-Yrl2K_7DAADMUuwfmFfUYvF9iYHTl1Nl19vNfR93Uw1I",
             .lazy = true,
         },
+
+        // Core ML: ML Program writer, host reference interpreter, runtime bindings
+        // (iPhone / Mac). Lazy: fetched only for iOS / macOS targets or -Dcoreml.
+        .TranslateCoreML = .{
+            .url = "git+https://github.com/Mauhlt/TranslateCoreML#5d4a1f4d104aa5221357ad1da9538f80f0422d35",
+            .hash = "translate_coreml-0.1.0-92kNGzZoAwBzbe7cN-JNFTznkZn3luJ24H8OZt5YVAFH",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

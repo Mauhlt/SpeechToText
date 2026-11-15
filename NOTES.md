@@ -189,3 +189,47 @@ access under one lock.
    models with 448-token samples would need recomputation (flash-style backward).
 4. Linux local time: `schedule.localMinute` reads local time on Windows only (UTC elsewhere).
 5. iOS: the old CLI hit a Zig std bug (`Io.Threaded`). Moot now (GPU-only, desktop).
+
+## iPhone: Core ML backend (2026-11-12)
+
+Goal: stt on the iPhone's Neural Engine for the native Portal app (Apple's
+SFSpeechRecognizer stays the fallback, in Portal). The ANE is reachable only
+through Core ML, so `Backend.coreml` builds two Core ML ML Programs in Zig
+(no Python / coremltools) with [TranslateCoreML](https://github.com/Mauhlt/TranslateCoreML) (MIL builder, protobuf
+writer, .mlpackage, Core ML runtime via the Objective-C runtime, opened with
+dlopen so nothing links frameworks).
+
+- Build: TranslateCoreML is a lazy dependency, used only when the target is
+  iOS / macOS (`-Dcoreml` turns it on elsewhere, for the reference checks).
+  Windows and Linux builds never fetch or compile it; there `Backend.coreml`
+  has a `noreturn` payload, so selecting it does not compile.
+- `src/coreml/frontend.zig`: log-mel on the host CPU (max abs err vs the GPU
+  1.7e-5 on hello.wav); frames that only see padding are skipped.
+- `src/coreml/net.zig`: encoder (mel [1][80][3000] -> conv1/conv2 + GELU ->
+  blocks -> cross K/V per decoder layer [1][H][1500][64]) and decoder step
+  (x, mask, self cache sk/sv [1][H][448][64] in, kn/vn + logits out). fp16
+  I/O, opset iOS 17 (CoreML7). Same math and tensor layout as the NPU graphs;
+  LoRA merged into the decoder weights when the program is built.
+- `src/coreml/engine.zig`: encode/step/pick/setAdapter like gpu/npu. Host:
+  mel, embedding row, mask row, K/V row copy, greedy pick over fp16 logits.
+  Inputs are MLMultiArrays over the engine's fp16 buffers (no copies); the
+  encoder's outputs are read straight into the decoder's cross inputs.
+  Programs are generated + compiled into `cache_dir` once (key: weights,
+  adapter, net.zig source, opset, compute units). `runtime = .reference`
+  runs the same programs on TranslateCoreML's host interpreter (any OS).
+- Validated on the desktop (reference runtime, fp16 rounding emulated):
+  tiny.en and base.en transcripts of hello.wav identical to the GPU's; cross K
+  layer 0 max abs err 0.009 (tiny) / 0.03 (base) of max 6.5 / 7.8. `zig build
+  test -Dcoreml` runs it (`src/coreml/tests.zig`, skipped without the model
+  or GPU). Not run on Apple hardware yet: see docs/mac-session.md.
+- `src/coreml/dev`: `zig build apple-check` (aarch64-ios and aarch64-macos
+  objects of the library with the backend), `coreml-dev`
+  (Mac or reference, compares with the GPU; `--export dir` writes the
+  packages) and `SttCoreML.app` (`zig build ios` / `ios-sign` on the Mac).
+- On a Mac, building stt needs the QAIRT headers for the qnn module (as on
+  Windows): copy `include/QNN` and set `QNN_SDK_ROOT`.
+
+Next (Phase 2 continued): ANE-friendly layout ([1][C][1][S], conv 1x1,
+per-head attention) if MLComputePlan shows CPU/GPU fallbacks; MLState (iOS 18)
+for the self cache and cross K/V; LoRA as inputs (no recompile per adapter);
+output backings.

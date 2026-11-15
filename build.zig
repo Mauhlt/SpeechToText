@@ -15,7 +15,13 @@ pub fn build(b: *std.Build) void {
     const npu = b.option(bool, "npu", "Build the NPU engine (QNN; default: only for aarch64-windows)") orelse npu_default;
     const sdk = b.option([]const u8, "sdk", "QAIRT/QNN SDK root for the NPU engine (passed on to TranslateNPU)");
     const stt_options = b.addOptions();
+    // Core ML backend (src/coreml): on for iOS / macOS targets. Off elsewhere,
+    // so TranslateCoreML (a lazy dependency) is never fetched or compiled;
+    // -Dcoreml turns it on for checks on its reference interpreter
+    // (`zig build test -Dcoreml` compares the programs with the GPU).
+    const coreml = b.option(bool, "coreml", "Include the Core ML backend (default: only for iOS / macOS targets)") orelse isApple(target);
     stt_options.addOption(bool, "npu", npu);
+    stt_options.addOption(bool, "coreml", coreml);
 
     // The library module other Zig projects import: `@import("stt")`.
     const mod = b.addModule("stt", .{
@@ -55,6 +61,11 @@ pub fn build(b: *std.Build) void {
         );
     }
     mod.addAnonymousImport("stt_ptx", .{ .root_source_file = wf.getDirectory().path(b, "ptx.zig") });
+    if (coreml) {
+        // MIL writer + reference interpreter on every OS, Core ML runtime
+        // bindings on iOS / macOS (dlopen'd, no link-time frameworks).
+        if (b.lazyDependency("TranslateCoreML", .{ .target = target, .optimize = optimize })) |dep| mod.addImport("coreml", dep.module("coreml"));
+    }
 
     const exe = b.addExecutable(.{
         .name = "stt",
@@ -126,4 +137,11 @@ fn qnnImport(b: *std.Build, mod: *std.Build.Module, steps: []const *std.Build.St
         return;
     }
     for (steps[1..]) |s| b.declareDependencyStep(s, "TranslateNPU");
+}
+
+fn isApple(t: std.Build.ResolvedTarget) bool {
+    return switch (t.result.os.tag) {
+        .ios, .macos => true,
+        else => false,
+    };
 }
