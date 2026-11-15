@@ -15,9 +15,16 @@ No third-party code. The outside pieces are a pretrained weight file (data),
 the NVIDIA driver (`nvcuda.dll` / `libcuda.so`, part of the display driver),
 and the sibling [Audio](../Audio) library for decoding WAV / MP3 / QOA.
 
-Needs Zig 0.18.0-dev.4, an NVIDIA GPU (GTX 10xx / Pascal or newer) on Windows
-or Linux, and `../Audio` checked out next to this folder. Builds in
+Needs Zig 0.18.0-dev.1005 and an NVIDIA GPU (GTX 10xx / Pascal or newer) on
+Windows or Linux. Audio and TranslateNPU are pinned URL dependencies (local
+checkouts: `zig build --fork=../Audio --fork=../TranslateNPU`). Builds in
 ReleaseFast by default (`zig build`).
+
+The NPU engine (`stt.Local` on a Snapdragon X laptop, QNN) is built for
+aarch64-windows only (`-Dnpu=true` forces it elsewhere). Other targets never
+compile QNN or need the QAIRT SDK, and `stt.Local` with the NPU backend
+returns `error.NpuUnavailable` there. For aarch64-windows the SDK comes from
+`-Dsdk=<dir>` or `QNN_SDK_ROOT` (see TranslateNPU's README for the rest).
 
 ## Setup
 

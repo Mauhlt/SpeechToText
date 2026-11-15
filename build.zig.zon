@@ -2,16 +2,29 @@
     .name = .stt,
     .version = "0.1.0",
     .fingerprint = 0xb5cd06cc48bd238b,
-    .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
+    .minimum_zig_version = "0.18.0-dev.1005+75d48dfff",
+    // Pinned commits on GitHub. Build against local checkouts with
+    // `zig build --fork=../Audio --fork=../TranslateNPU`.
     .dependencies = .{
-        // Audio file decoding/encoding (WAV, MP3, QOA): the sibling project.
-        .Audio = .{ .path = "../Audio" },
-        // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK headers.
-        .TranslateNPU = .{ .path = "../TranslateNPU" },
+        // Audio file decoding/encoding (WAV, MP3, QOA).
+        .Audio = .{
+            .url = "git+https://github.com/Mauhlt/Audio#3371aecfe3969b385ef4ec5935c6ca926971016b",
+            .hash = "Audio-0.0.0-WaiWyGroUADN5wFXgx_GHbPGErZqBlUSN9w7Is93pyzw",
+        },
+        // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK
+        // headers. Lazy: only the NPU engine (aarch64-windows, see
+        // build.zig) fetches it, and only for a step that compiles it.
+        .TranslateNPU = .{
+            .url = "git+https://github.com/Mauhlt/TranslateNPU#ffe109e884dc74ae1a963d43f1ede3fb5b735d2d",
+            .hash = "translate_npu-0.1.0-Yrl2K_7DAADMUuwfmFfUYvF9iYHTl1Nl19vNfR93Uw1I",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        // testdata/hello.wav: packages' tests (Portal's speech tests) use it.
+        "testdata",
     },
 }

@@ -4,3 +4,4 @@ models/*.bin
 # Personal voice recordings and learned adapter
 profile/
 *.tmp
+zig-pkg/

@@ -5,6 +5,18 @@ pub fn build(b: *std.Build) void {
     // Neural-net inference is ~100x slower in Debug, so default to fast.
     const optimize = b.option(std.lang.Optimize, "optimize", "Optimization mode (default: fast)") orelse .fast;
 
+    // The NPU engine (src/npu: stt.Local on a Snapdragon laptop's Hexagon
+    // NPU, through QNN) is built for aarch64-windows only. Every other
+    // target gets an engine that reports error.NpuUnavailable, and never
+    // compiles QNN or needs the QAIRT SDK. -Dnpu=true turns it on elsewhere
+    // (QNN's CPU backend on x86_64-windows), with the SDK from -Dsdk or
+    // QNN_SDK_ROOT (TranslateNPU fetches the SDK for aarch64-windows only).
+    const npu_default = target.result.os.tag == .windows and target.result.cpu.arch == .aarch64;
+    const npu = b.option(bool, "npu", "Build the NPU engine (QNN; default: only for aarch64-windows)") orelse npu_default;
+    const sdk = b.option([]const u8, "sdk", "QAIRT/QNN SDK root for the NPU engine (passed on to TranslateNPU)");
+    const stt_options = b.addOptions();
+    stt_options.addOption(bool, "npu", npu);
+
     // The library module other Zig projects import: `@import("stt")`.
     const mod = b.addModule("stt", .{
         .root_source_file = b.path("src/root.zig"),
@@ -12,9 +24,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "Audio", .module = b.dependency("Audio", .{ .target = target }).module("Audio") },
-            // QNN bindings for the laptop NPU path (stt.Local). Building needs
-            // the QAIRT SDK headers (see ../TranslateNPU); nothing from the SDK ships.
-            .{ .name = "qnn", .module = b.dependency("TranslateNPU", .{ .target = target, .optimize = optimize }).module("qnn") },
+            .{ .name = "stt_options", .module = stt_options.createModule() },
         },
     });
 
@@ -96,4 +106,24 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(proto_tests).step);
+
+    // QNN bindings for the NPU engine: TranslateNPU, a lazy dependency
+    // fetched only when one of these steps (the ones compiling the "stt"
+    // module here) runs with the NPU engine on. A package that compiles
+    // "stt" with -Dnpu itself must use one of them (Portal builds
+    // stt-local). Nothing from the SDK ships: the laptop loads the QNN
+    // runtime installed on it.
+    if (npu) qnnImport(b, mod, &.{ &local_exe.step, &exe.step, &mod_tests.step, &local_unit.step }, .{
+        .target = target,
+        .optimize = optimize,
+        .sdk = sdk,
+    });
+}
+
+fn qnnImport(b: *std.Build, mod: *std.Build.Module, steps: []const *std.Build.Step, args: anytype) void {
+    if (b.dependencyStep(steps[0], "TranslateNPU", args)) |dep| {
+        mod.addImport("qnn", dep.module("qnn"));
+        return;
+    }
+    for (steps[1..]) |s| b.declareDependencyStep(s, "TranslateNPU");
 }

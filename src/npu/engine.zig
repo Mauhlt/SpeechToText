@@ -126,7 +126,50 @@ const What = union(enum) {
     decoder: net.DecWeights,
 };
 
-pub const Engine = struct {
+/// Whether this build has the NPU engine: on for aarch64-windows (the
+/// Snapdragon laptops) unless -Dnpu=false, off everywhere else. Off, QNN is
+/// never compiled (no SDK needed) and `Engine.init` returns error.NpuUnavailable.
+pub const enabled = @import("stt_options").npu;
+
+pub const Engine = if (enabled) QnnEngine else NoNpu;
+
+/// The engine of a build without the NPU: same calls as QnnEngine, but it
+/// can never be created.
+const NoNpu = struct {
+    adapter_version: u32 = 0,
+
+    pub fn init(gpa: Allocator, model: *const Model, opts: Options) !*NoNpu {
+        _ = .{ gpa, model, opts };
+        log.warn("this stt build has no NPU engine (it is built for aarch64-windows only)", .{});
+        return error.NpuUnavailable;
+    }
+    pub fn deinit(e: *NoNpu, gpa: Allocator) void {
+        _ = .{ e, gpa };
+        unreachable;
+    }
+    pub fn deviceName(e: *const NoNpu) []const u8 {
+        _ = e;
+        unreachable;
+    }
+    pub fn encode(e: *NoNpu, samples_in: []const f32) !void {
+        _ = .{ e, samples_in };
+        unreachable;
+    }
+    pub fn step(e: *NoNpu, token: u32, pos: u32, want_logits: bool) !void {
+        _ = .{ e, token, pos, want_logits };
+        unreachable;
+    }
+    pub fn pick(e: *NoNpu, ban_from: u32, ban: [2]u32, nosp: u32) !Pick {
+        _ = .{ e, ban_from, ban, nosp };
+        unreachable;
+    }
+    pub fn setAdapter(e: *NoNpu, ad: ?*const Adapter, version: u32) !void {
+        _ = .{ e, ad, version };
+        unreachable;
+    }
+};
+
+const QnnEngine = struct {
     /// Version tag of the adapter merged into the weights (0 = none).
     adapter_version: u32 = 0,
 
