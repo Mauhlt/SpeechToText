@@ -134,15 +134,30 @@ pub const Adapter = struct {
         return parse(gpa, bytes, m);
     }
 
-    pub fn parse(gpa: Allocator, bytes: []const u8, m: *const Model) !Adapter {
+    /// Checks an adapter file without the model: magic, rank, alpha, and
+    /// that its size matches its own header (every decoder layer holds six
+    /// n_state x n_state slots and fc1 / fc2 of n_state x 4·n_state, so
+    /// 22·n_state parameters per layer per rank).
+    pub fn check(bytes: []const u8) !void {
         if (bytes.len < 24 or !std.mem.eql(u8, bytes[0..8], magic)) return error.BadAdapterFile;
+        const nl: usize = std.mem.readInt(u32, bytes[8..12], .little);
+        const ns: usize = std.mem.readInt(u32, bytes[12..16], .little);
+        const rank: usize = std.mem.readInt(u32, bytes[16..20], .little);
+        const alpha: f32 = @bitCast(std.mem.readInt(u32, bytes[20..24], .little));
+        if (nl == 0 or ns == 0 or rank == 0 or rank > max_rank or !std.math.isFinite(alpha)) return error.BadAdapterFile;
+        const params = std.math.mul(usize, 22 * rank, std.math.mul(usize, nl, ns) catch return error.BadAdapterFile) catch return error.BadAdapterFile;
+        const size = std.math.mul(usize, params, 4) catch return error.BadAdapterFile;
+        if (bytes.len - 24 != size) return error.BadAdapterFile;
+    }
+
+    pub fn parse(gpa: Allocator, bytes: []const u8, m: *const Model) !Adapter {
+        // Validate the header against the file size before allocating anything.
+        try check(bytes);
         const nl = std.mem.readInt(u32, bytes[8..12], .little);
         const ns = std.mem.readInt(u32, bytes[12..16], .little);
         if (nl != m.hp.n_text_layer or ns != m.hp.n_text_state) return error.AdapterModelMismatch;
         const rank = std.mem.readInt(u32, bytes[16..20], .little);
         const alpha: f32 = @bitCast(std.mem.readInt(u32, bytes[20..24], .little));
-        // Validate the header against the file size before allocating anything.
-        if (rank == 0 or rank > max_rank or !std.math.isFinite(alpha)) return error.BadAdapterFile;
         if (bytes.len != 24 + paramCount(m, rank) * 4) return error.BadAdapterFile;
         var ad = try alloc(gpa, m, rank, alpha);
         errdefer ad.deinit(gpa);

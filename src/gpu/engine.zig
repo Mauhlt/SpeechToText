@@ -160,6 +160,10 @@ pub const Engine = struct {
     pub fn init(gpa: Allocator, model: *const Model) !*Engine {
         if (!available) return error.CudaUnavailable;
         const hp = model.hp;
+        // Head counts come from the model file; Model.parse rejects zero,
+        // and this check keeps a hand-built HParams from dividing by zero
+        // (no runtime safety checks in .fast builds).
+        try hp.check();
         if (hp.n_audio_state / hp.n_audio_head != head_dim or hp.n_text_state / hp.n_text_head != head_dim)
             return error.UnsupportedHeadDim;
         if (hp.n_audio_state % 8 != 0 or hp.n_text_state % 8 != 0) return error.UnsupportedModelShape;

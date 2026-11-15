@@ -15,17 +15,15 @@ and the step list at the top of [src/coreml/dev/build.zig](../src/coreml/dev/bui
 
 1. Apple-silicon Mac with Xcode (iPhoneOS SDK, `xcrun`, `devicectl`), and
    Zig 0.18.0-dev.1005 active (`zig version`).
-2. Side by side in one folder: this repo on branch `coreml`, plus `Audio`
-   and `TranslateNPU` (still path dependencies of stt), and
+2. This repo on `main`, plus a checkout of
    [TranslateCoreML](https://github.com/Mauhlt/TranslateCoreML) for step 1.
-   stt fetches TranslateCoreML itself (lazy, pinned in `build.zig.zon`), so
-   the pinned commit must be on GitHub first.
-3. The QNN headers, because stt's `qnn` module is compiled for every target:
-   copy the QAIRT `include/QNN` folder over and set `QNN_SDK_ROOT` to its
-   parent (as NOTES.md says).
-4. `models/ggml-tiny.en.bin` in this repo ([README, Setup](../README.md#setup)
+   stt fetches its dependencies itself (`Audio`, and `TranslateCoreML` lazily
+   for Apple targets; pinned in `build.zig.zon`), so the pinned commits must
+   be on GitHub. No QAIRT SDK or QNN headers are needed: the NPU engine is
+   compiled only for aarch64-windows.
+3. `models/ggml-tiny.en.bin` in this repo ([README, Setup](../README.md#setup)
    shows the download; use the tiny.en file). `testdata/hello.wav` is in the repo.
-5. For the iPhone (step 4): a development signing identity, a provisioning
+4. For the iPhone (step 4): a development signing identity, a provisioning
    profile that lists the iPhone, the team id, and the iPhone connected with
    Developer Mode on.
 

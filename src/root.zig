@@ -74,6 +74,12 @@ test {
     _ = audio;
     _ = profile;
     _ = sync;
+    _ = training;
+    _ = bpe;
+    _ = model;
+    _ = adapter;
+    _ = npu.engine;
+    _ = gpu.engine;
     _ = window;
     _ = service;
     _ = schedule;

@@ -68,7 +68,7 @@ const next = home.tick(); // ?i64 unix ms of the next deadline; null = nothing p
 a transcript whose silence period ran out, and starting training when the
 window opens. It returns when it next needs to run. The wakeup hook reports
 the deadline whenever it changes (after a transcription, feedback, an import,
-a schedule change, or a finished training run), so Portal can sleep until
+or a finished training run), so Portal can sleep until
 exactly then. Training runs finish on their own thread; no tick is needed for that.
 
 All `Home` methods are thread-safe. Sync between devices and home
@@ -203,7 +203,7 @@ text isn't known. Everything learned lives in the profile folder:
 Training learns low-rank (LoRA) adapters on every decoder layer with a
 hand-written backward pass and the **Muon** optimizer (Newton–Schulz-
 orthogonalized momentum; Adam is also available), all on the GPU. It took
-about 1 s for 6 samples × 3 epochs on base.en / RTX 4060. The new adapter is
+about 1 s for 6 samples × 3 epochs on base.en / an RTX 40-series GPU. The new adapter is
 merged into the transcription weights on the GPU as soon as it finishes.
 
 Training uses the GPU hard, so other GPU work (transcription too) is slower
@@ -212,9 +212,9 @@ while it runs. It only **starts** automatically:
 - inside the daily window (local time, default **02:00–06:00**), and
 - once `min_new_samples` (default 20) samples have arrived since the last version.
 
-`home.trainNow()` starts it immediately; `home.cancelTraining()` stops it
-(the previous adapter stays). `home.setSchedule(...)` changes the window
-(`window = null` means manual only).
+`home.trainNow()` starts it immediately. `Config.schedule` sets the window
+(`window = null` means manual only). Closing `Home` stops a run (the previous
+adapter stays).
 
 **So Portal can warn you**, `home.trainingStatus()` returns:
 
@@ -252,21 +252,46 @@ while (try stt.sync.exportBundle(gpa, &profile, "laptop", stt.sync.default_bundl
 }
 if (try receiveUpdate()) |bytes| _ = try stt.sync.importUpdate(gpa, &profile, bytes);
 
-// home:
-_ = try home.importBundle(gpa, bundle_bytes);
+// home: `device` is the authenticated device the bundle came from (the
+// bundle's own device name is ignored)
+_ = try home.importBundle(gpa, bundle_bytes, device);
 if (try home.exportUpdate(gpa, device_version)) |u| reply(u);
 ```
 
 Sizes: one sample is at most about 1 MB (30 s of 16-bit audio). Bundles are
-size-capped and chunkable (8 MB by default). An update is the adapter (about
-1.1 MB tiny, 2.2 MB base, 6.5 MB small) plus the rules and vocab text. Devices
-must use the same base model file as home.
+size-capped and chunkable (8 MB by default, at most 1024 samples). An update
+is the adapter (about 1.1 MB tiny, 2.2 MB base, 6.5 MB small) plus the rules
+and vocab text. Devices must use the same base model file as home.
+
+**Importing is bounded and all-or-nothing.** `importBundle` checks and decodes
+the whole bundle (and works out what each fix teaches) before storing anything,
+outside `Home`'s lock; a bad entry rejects the bundle and stores nothing. Texts
+lose their control characters. A correction over 256 words teaches nothing
+(its sample is still kept), words over 64 bytes are never learned, one bundle
+adds at most 64 rules and 256 words, and learning stops adding at 2048 rules
+and 20 000 words in total. An update's adapter is checked (against the model,
+in `Local`) before anything is written, and its version is recorded last.
+
+**Provenance.** Every learned rule and word records the device that taught it
+(`sources.txt`, beside `rules.txt`; samples record it in their `.meta`).
+`home.forgetSource(device)` (or `Profile.forgetSource`) drops that device's
+samples, rules and words, e.g. when it is unpaired. What a previous training
+run already learned from them stays in the adapter until the next run.
 
 **Storage cap:** once home samples exceed 50 GB (`StoragePolicy.max_bytes`),
 the oldest audio that is already trained in is deleted after a training run
 until usage is under 80%, keeping every 10th sample as a replay set.
-Transcript text and metadata are kept. Unpairing a device never deletes its
-samples.
+Transcript text and metadata are kept.
+
+A host with its own cap uses `home.profileBytes()` (every file in the profile
+folder) and `home.deleteOldestSamples(target_bytes)` (also on `Profile`): it
+deletes whole samples (audio, text, metadata), oldest first, until the folder
+is at most `target_bytes`, and returns `{ freed_bytes, deleted_samples,
+bytes_after }`. The vocabulary, rules, adapter and its archive are never
+deleted, so `bytes_after` can stay above the target. Each sample loses its
+`.txt` first, so an interrupted delete leaves a loadable profile (the leftover
+files are ignored and removed by the next call). It is allowed while training
+runs: a run reads its samples once when it starts and skips any that are gone.
 
 ## CLI (for testing on the desktop)
 
@@ -286,7 +311,7 @@ The kernels in `src/gpu/kernels.zig` are Zig, compiled to PTX by Zig's own
 NVPTX backend at build time and embedded in the library. The driver
 JIT-compiles them for the installed card on first run (and caches the result).
 
-Measured on an RTX 4060, base.en (the CPU column is the old CPU version on an i5-14400F, for scale):
+Measured on an RTX 40-series GPU, base.en (the CPU column is the old CPU version on a desktop CPU, for scale):
 
 | | old CPU | GPU |
 |---|---|---|

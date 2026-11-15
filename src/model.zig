@@ -37,6 +37,23 @@ pub const HParams = struct {
     n_text_layer: usize,
     n_mels: usize,
     ftype: usize,
+
+    /// Largest value any hyperparameter may have. Real models are far below
+    /// it (vocab 51866, state 1280, contexts 1500); keeping every field this
+    /// small means no size computed from them can overflow (the library is
+    /// built without runtime safety checks).
+    pub const max_value = 1 << 17;
+
+    /// Rejects hyperparameters a model file can't sensibly have: zero head
+    /// counts (later divisors), widths not divisible by their head count,
+    /// and anything over `max_value`.
+    pub fn check(hp: HParams) !void {
+        inline for (@typeInfo(HParams).@"struct".field_names) |name| {
+            if (@field(hp, name) > max_value) return error.BadValue;
+        }
+        if (hp.n_audio_head == 0 or hp.n_text_head == 0) return error.BadValue;
+        if (hp.n_audio_state % hp.n_audio_head != 0 or hp.n_text_state % hp.n_text_head != 0) return error.BadValue;
+    }
 };
 
 pub const Norm = struct { w: []const f32, b: []const f32 };
@@ -148,6 +165,7 @@ pub const Model = struct {
             @field(hp, name) = try r.usz();
         }
         if (hp.ftype > 1) return error.QuantizedModelUnsupported;
+        try hp.check();
 
         const n_mel = try r.usz();
         const n_fft = try r.usz();
@@ -229,6 +247,28 @@ pub const Model = struct {
         };
     }
 };
+
+test "model header: zero or oversized hyperparameters are rejected" {
+    const gpa = std.testing.allocator;
+    var buf: [4 + 11 * 4]u8 = undefined;
+    std.mem.writeInt(u32, buf[0..4], 0x67676d6c, .little);
+    const good = [11]i32{ 51864, 1500, 384, 6, 4, 448, 384, 6, 4, 80, 1 };
+    const cases = [_]struct { field: usize, value: i32 }{
+        .{ .field = 3, .value = 0 }, // n_audio_head = 0 (a divisor)
+        .{ .field = 7, .value = 0 }, // n_text_head = 0
+        .{ .field = 7, .value = 7 }, // 384 % 7 != 0
+        .{ .field = 0, .value = std.math.maxInt(i32) }, // n_vocab: sizes would overflow
+    };
+    for (cases) |cs| {
+        var hp = good;
+        hp[cs.field] = cs.value;
+        for (hp, 0..) |v, i| std.mem.writeInt(i32, buf[4 + i * 4 ..][0..4], v, .little);
+        try std.testing.expectError(error.BadValue, Model.parse(gpa, &buf));
+    }
+    // The good header passes the check (and fails later: no filterbank).
+    for (good, 0..) |v, i| std.mem.writeInt(i32, buf[4 + i * 4 ..][0..4], v, .little);
+    try std.testing.expectError(error.UnexpectedEof, Model.parse(gpa, &buf));
+}
 
 const Cursor = struct {
     buf: []const u8,

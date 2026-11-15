@@ -218,7 +218,7 @@ test "gpu: Local (cuda backend): transcribe, fix, bundle home, adapter update, w
         defer b.deinit(gpa);
         var hp = try Profile.load(gpa, io, hdir);
         defer hp.deinit();
-        const rep = try sync.importBundle(gpa, &hp, b.bytes);
+        const rep = try sync.importBundle(gpa, &hp, b.bytes, "laptop");
         try std.testing.expectEqual(@as(u32, 1), rep.fixes);
         try l.commitExport(b.through);
         try std.testing.expectEqual(@as(u32, 0), l.status().pending_export);

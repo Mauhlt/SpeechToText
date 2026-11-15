@@ -9,17 +9,23 @@
 //!
 //! Per sync, device ↔ home:
 //!   device: b = exportBundle(max_bytes)            -> send b.bytes + profile.version
-//!   home:   importBundle(bytes), durably stored    -> ack
+//!   home:   importBundle(bytes, device), durably stored -> ack
 //!   device: commitExport(b.through)                (repeat while more is pending)
 //!   home:   exportUpdate(device_version)           -> send if non-null
 //!   device: importUpdate(bytes)                    (used on the next model load)
 //!   home:   training runs on its schedule (see home.zig / schedule.zig)
+//!
+//! Home never trusts a bundle's own device name: the caller passes the
+//! authenticated device it came from, and everything it teaches is recorded
+//! under that name (`Profile.forgetSource` undoes it).
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const profile_mod = @import("profile.zig");
 const Profile = profile_mod.Profile;
 const audio_mod = @import("audio.zig");
+const Model = @import("model.zig").Model;
+const Adapter = @import("adapter.zig").Adapter;
 
 const bundle_magic = "STTBUN01";
 const update_magic = "STTUPD01";
@@ -30,6 +36,11 @@ pub const max_sample_bytes = profile_mod.max_sample_seconds * audio_mod.target_r
 pub const max_text_bytes = 16 * 1024;
 /// Suggested per-request cap for bundles (several samples, chunked).
 pub const default_bundle_bytes = 8 << 20;
+/// Most samples one bundle may carry (`exportBundle` stops here).
+pub const max_bundle_entries = 1024;
+/// Most new rules and words one bundle may add to the home profile.
+pub const max_bundle_new_rules = 64;
+pub const max_bundle_new_words = 256;
 
 pub const Bundle = struct {
     bytes: []u8,
@@ -61,7 +72,7 @@ pub fn exportBundle(gpa: Allocator, p: *Profile, device_name: []const u8, max_by
     var through = p.exported;
     var id = p.exported + 1;
     var name_buf: [48]u8 = undefined;
-    while (id < p.next_sample) : (id += 1) {
+    while (id < p.next_sample and count < max_bundle_entries) : (id += 1) {
         const text = readSampleFile(gpa, p, &name_buf, id, "txt") orelse continue;
         defer gpa.free(text);
         const audio = readSampleFile(gpa, p, &name_buf, id, "wav") orelse continue;
@@ -92,23 +103,35 @@ pub fn exportBundle(gpa: Allocator, p: *Profile, device_name: []const u8, max_by
 /// Marks samples up to `through` as delivered and deletes them from this
 /// device (the home device now holds them).
 pub fn commitExport(p: *Profile, through: u32) !void {
-    if (through <= p.exported) return;
+    // Only ids that exist can have been exported (this also keeps the loop
+    // finite for through = maxInt(u32)).
+    const last = @min(through, p.next_sample -| 1);
+    if (last <= p.exported) return;
     var name_buf: [48]u8 = undefined;
     var id = p.exported + 1;
-    while (id <= through) : (id += 1) {
-        for ([_][]const u8{ "wav", "meta", "txt" }) |ext| {
+    while (id <= last) : (id += 1) {
+        for ([_][]const u8{ "txt", "wav", "meta" }) |ext| {
             const rel = std.fmt.bufPrint(&name_buf, "samples/{d:0>6}.{s}", .{ id, ext }) catch unreachable;
             Io.Dir.cwd().deleteFile(p.io, try p.path(rel)) catch {};
         }
     }
-    p.exported = through;
+    p.exported = last;
     try p.saveState();
 }
 
 /// Installs an update from the home device: adapter weights plus phrase
 /// rules and vocabulary. Takes effect the next time a model is loaded with
-/// this profile. Returns the version now installed.
+/// this profile. Returns the version now installed. Without the model the
+/// adapter is checked for internal consistency only; `importUpdateFor`
+/// also checks it fits the model.
 pub fn importUpdate(gpa: Allocator, p: *Profile, bytes: []const u8) !u32 {
+    return importUpdateFor(gpa, p, bytes, null);
+}
+
+/// Like `importUpdate`, checking the adapter against `model` (layer count,
+/// width, size) before anything is written. A bad update changes nothing:
+/// the adapter is validated first, and the version is recorded last.
+pub fn importUpdateFor(gpa: Allocator, p: *Profile, bytes: []const u8, model: ?*const Model) !u32 {
     var r: Reader = .{ .buf = bytes };
     if (!std.mem.eql(u8, try r.take(8), update_magic)) return error.BadUpdate;
     const version = try r.int();
@@ -117,6 +140,12 @@ pub fn importUpdate(gpa: Allocator, p: *Profile, bytes: []const u8) !u32 {
     const vocab = try r.bytes();
     if (version <= p.version) return p.version;
 
+    if (adapter.len > 0) {
+        if (model) |m| {
+            var ad = try Adapter.parse(gpa, adapter, m);
+            ad.deinit(gpa);
+        } else try Adapter.check(adapter);
+    }
     const cwd = Io.Dir.cwd();
     if (adapter.len > 0) {
         try cwd.writeFile(p.io, .{ .sub_path = try p.path("adapter.bin.tmp"), .data = adapter });
@@ -139,47 +168,118 @@ pub const ImportReport = struct {
     device_version: u32 = 0,
 };
 
-/// Stores a device's bundle in the home profile; fixes also teach phrase
-/// rules and vocabulary right away. Rejects malformed input.
-pub fn importBundle(gpa: Allocator, home: *Profile, bytes: []const u8) !ImportReport {
+/// Stores a bundle from `source_device` in the home profile; fixes also
+/// teach phrase rules and vocabulary right away. `source_device` is the
+/// authenticated device the caller received it from (the bundle's own
+/// device name is ignored); it is recorded on every sample, rule and word.
+/// All or nothing for bad input: the whole bundle is checked and decoded
+/// before anything is stored. See `prepareBundle` / `commitBundle` to do
+/// the expensive half without holding the profile's lock.
+pub fn importBundle(gpa: Allocator, home: *Profile, bytes: []const u8, source_device: []const u8) !ImportReport {
+    var pb = try prepareBundle(gpa, bytes, source_device);
+    defer pb.deinit();
+    return commitBundle(gpa, home, &pb);
+}
+
+/// A bundle checked, decoded and turned into lessons, ready to store.
+pub const PreparedBundle = struct {
+    arena: *std.heap.ArenaAllocator,
+    source: []const u8,
+    device_version: u32,
+    entries: []const Entry,
+
+    pub const Entry = struct {
+        kind: profile_mod.SampleKind,
+        text: []const u8,
+        heard: []const u8,
+        /// 16 kHz mono WAV to store, or null (too long or empty: not kept).
+        wav: ?[]const u8,
+        lesson: profile_mod.Lesson,
+    };
+
+    pub fn deinit(pb: *PreparedBundle) void {
+        const gpa = pb.arena.child_allocator;
+        pb.arena.deinit();
+        gpa.destroy(pb.arena);
+        pb.* = undefined;
+    }
+};
+
+/// The expensive, profile-free half of `importBundle` (safe outside any
+/// lock): checks every size, decodes every sample's audio, cleans control
+/// characters out of the texts and works out what each fix teaches (with
+/// the word-count and word-length caps). Any bad entry rejects the bundle.
+pub fn prepareBundle(gpa: Allocator, bytes: []const u8, source_device: []const u8) !PreparedBundle {
+    try profile_mod.checkSource(source_device);
+    const arena = try gpa.create(std.heap.ArenaAllocator);
+    errdefer gpa.destroy(arena);
+    arena.* = .init(gpa);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
     var r: Reader = .{ .buf = bytes };
     if (!std.mem.eql(u8, try r.take(8), bundle_magic)) return error.BadBundle;
-    var rep: ImportReport = .{ .device_version = try r.int() };
-    const device = try r.bytes();
-    if (device.len > max_text_bytes) return error.BadBundle;
+    const device_version = try r.int();
+    // The bundle's own device name: checked for size, otherwise unused.
+    if ((try r.bytes()).len > max_text_bytes) return error.BadBundle;
     const count = try r.int();
-    const body = r;
-
-    // Pass 1: check the whole bundle's structure and sizes before storing
-    // anything, so a bad entry can't leave a half-imported bundle behind
-    // (the device would resend it and home would get duplicates).
-    for (0..count) |_| {
+    if (count > max_bundle_entries) return error.BadBundle;
+    const entries = try a.alloc(PreparedBundle.Entry, count);
+    for (entries) |*e| {
         const meta_text = try r.bytes();
-        const text = try r.bytes();
+        const text_raw = try r.bytes();
         const audio_bytes = try r.bytes();
         if (audio_bytes.len > max_sample_bytes) return error.BadBundle;
-        if (meta_text.len > max_text_bytes or text.len > max_text_bytes) return error.BadBundle;
-        if (parseMeta(meta_text).heard.len > max_text_bytes) return error.BadBundle;
-    }
-
-    // Pass 2: store.
-    r = body;
-    for (0..count) |_| {
-        const meta_text = try r.bytes();
-        const text = try r.bytes();
-        const audio_bytes = try r.bytes();
-        const samples = audio_mod.decode(gpa, audio_bytes, .{ .max_seconds = profile_mod.max_sample_seconds + 1 }) catch return error.BadBundle;
+        if (meta_text.len > max_text_bytes or text_raw.len > max_text_bytes) return error.BadBundle;
+        const meta = profile_mod.SampleMeta.parse(meta_text);
+        const text = try profile_mod.cleanText(a, text_raw);
+        const heard = try profile_mod.cleanText(a, meta.heard);
+        const samples = audio_mod.decode(gpa, audio_bytes, .{ .max_seconds = profile_mod.max_sample_seconds + 1 }) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.BadBundle,
+        };
         defer gpa.free(samples);
-        const meta = parseMeta(meta_text);
-        const source = if (meta.source.len > 0) meta.source else device;
-        if (meta.kind == .fix and meta.heard.len > 0) {
-            _ = try home.learnFrom(gpa, meta.heard, text, samples, source);
+        const keep = text.len > 0 and samples.len <= profile_mod.max_sample_seconds * audio_mod.target_rate;
+        const wav: ?[]const u8 = if (keep) blk: {
+            const w = try audio_mod.encodeWav(gpa, samples, audio_mod.target_rate);
+            defer gpa.free(w);
+            break :blk try a.dupe(u8, w);
+        } else null;
+        const fix = meta.kind == .fix and heard.len > 0 and text.len > 0 and !std.mem.eql(u8, heard, text);
+        e.* = .{
+            .kind = if (fix) .fix else .confirm,
+            .text = text,
+            .heard = if (fix) heard else text,
+            .wav = wav,
+            .lesson = if (fix) try profile_mod.lesson(a, heard, text) else .{},
+        };
+    }
+    if (r.pos != r.buf.len) return error.BadBundle;
+    return .{
+        .arena = arena,
+        .source = try a.dupe(u8, source_device),
+        .device_version = device_version,
+        .entries = entries,
+    };
+}
+
+/// The cheap half of `importBundle` (caller holds the profile's lock):
+/// stores the samples, applies the lessons within the per-bundle and total
+/// caps, and writes vocab.txt / rules.txt / sources.txt once.
+pub fn commitBundle(gpa: Allocator, home: *Profile, pb: *const PreparedBundle) !ImportReport {
+    var rep: ImportReport = .{ .device_version = pb.device_version };
+    var budget: profile_mod.Budget = .{ .rules = max_bundle_new_rules, .words = max_bundle_new_words };
+    for (pb.entries) |e| {
+        if (e.kind == .fix) {
+            _ = try home.applyLesson(e.lesson, pb.source, &budget);
             rep.fixes += 1;
-            rep.samples += 1;
-        } else if (try home.saveSampleMeta(gpa, samples, text, .{ .kind = .confirm, .heard = text, .source = source })) |_| {
+        }
+        if (e.wav) |wav| {
+            _ = try home.writeSample(wav, e.text, .{ .kind = e.kind, .heard = e.heard, .source = pb.source });
             rep.samples += 1;
         }
     }
+    home.sortRules();
     try home.save(gpa);
     return rep;
 }
@@ -194,11 +294,7 @@ pub const StoragePolicy = struct {
     keep_every: u32 = 10,
 };
 
-pub const CompactReport = struct {
-    freed_bytes: u64 = 0,
-    deleted_samples: u32 = 0,
-    bytes_after: u64 = 0,
-};
+pub const CompactReport = profile_mod.StorageReport;
 
 /// Builds the update for a device running `device_version`, or null if it
 /// is already current.
@@ -271,20 +367,6 @@ fn readSampleFile(gpa: Allocator, p: *Profile, buf: *[48]u8, id: u32, ext: []con
     return Io.Dir.cwd().readFileAlloc(p.io, full, gpa, .limited(max_sample_bytes)) catch null;
 }
 
-fn parseMeta(text: []const u8) profile_mod.SampleMeta {
-    var m: profile_mod.SampleMeta = .{};
-    var lines = std.mem.tokenizeAny(u8, text, "\r\n");
-    while (lines.next()) |line| {
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const k = line[0..eq];
-        const v = line[eq + 1 ..];
-        if (std.mem.eql(u8, k, "kind")) m.kind = std.meta.stringToEnum(profile_mod.SampleKind, v) orelse .confirm;
-        if (std.mem.eql(u8, k, "heard")) m.heard = v;
-        if (std.mem.eql(u8, k, "source")) m.source = v;
-    }
-    return m;
-}
-
 fn putInt(gpa: Allocator, out: *std.ArrayList(u8), v: u32) !void {
     var b: [4]u8 = undefined;
     std.mem.writeInt(u32, &b, v, .little);
@@ -338,14 +420,16 @@ test "device -> home -> device round trip" {
     var b1 = (try exportBundle(gpa, &dev, "laptop", 1)).?;
     defer b1.deinit(gpa);
     try std.testing.expectEqual(@as(u32, 1), b1.count);
-    const r1 = try importBundle(gpa, &home, b1.bytes);
+    const r1 = try importBundle(gpa, &home, b1.bytes, "laptop");
     try std.testing.expectEqual(@as(u32, 0), r1.fixes);
     try commitExport(&dev, b1.through);
 
     var b2 = (try exportBundle(gpa, &dev, "laptop", default_bundle_bytes)).?;
     defer b2.deinit(gpa);
-    const r2 = try importBundle(gpa, &home, b2.bytes);
+    // The bundle claims "laptop"; the session says it came from "tablet".
+    const r2 = try importBundle(gpa, &home, b2.bytes, "tablet");
     try std.testing.expectEqual(@as(u32, 1), r2.fixes);
+    try std.testing.expectEqualStrings("tablet", home.rules.items[0].source);
     try commitExport(&dev, b2.through);
     try std.testing.expect((try exportBundle(gpa, &dev, "laptop", default_bundle_bytes)) == null);
 
@@ -368,7 +452,7 @@ test "device -> home -> device round trip" {
     try std.testing.expectEqualStrings("made in pure Zig", fixed2);
 
     // Compaction: with a tiny cap, trained audio goes except the replay set.
-    for (0..9) |_| _ = try home.saveSample(gpa, &audio, "filler");
+    for (0..9) |_| _ = try profile_mod.testSample(&home, gpa, &audio, "filler");
     home.trained = home.next_sample - 1; // pretend all are trained
     const before = try samplesBytes(&home);
     const rep = try compact(&home, .{ .max_bytes = 1, .target_ratio = 0, .keep_every = 5 });
@@ -380,7 +464,160 @@ test "device -> home -> device round trip" {
     try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, gone, .{}));
 
     // Malformed input is rejected, not trusted.
-    try std.testing.expectError(error.BadBundle, importBundle(gpa, &home, "NOTABUNDLE......"));
-    try std.testing.expectError(error.Truncated, importBundle(gpa, &home, "nope"));
-    try std.testing.expectError(error.Truncated, importBundle(gpa, &home, bundle_magic ++ "\x01\x00"));
+    try std.testing.expectError(error.BadBundle, importBundle(gpa, &home, "NOTABUNDLE......", "laptop"));
+    try std.testing.expectError(error.Truncated, importBundle(gpa, &home, "nope", "laptop"));
+    try std.testing.expectError(error.Truncated, importBundle(gpa, &home, bundle_magic ++ "\x01\x00", "laptop"));
+    try std.testing.expectError(error.InvalidSource, importBundle(gpa, &home, b2.bytes, ""));
+    try std.testing.expectError(error.InvalidSource, importBundle(gpa, &home, b2.bytes, "\r\n"));
+}
+
+/// A bundle built by hand: (meta, text, audio) per entry.
+fn testBundle(gpa: Allocator, entries: []const [3][]const u8) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, bundle_magic);
+    try putInt(gpa, &out, 0);
+    try putBytes(gpa, &out, "claimed-name");
+    try putInt(gpa, &out, @intCast(entries.len));
+    for (entries) |e| for (e) |f| try putBytes(gpa, &out, f);
+    return out.toOwnedSlice(gpa);
+}
+
+test "importBundle: a bad entry stores nothing; control characters are cleaned; caps hold" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const hdir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/home", .{tmp.sub_path});
+    defer gpa.free(hdir);
+    var home = try Profile.load(gpa, io, hdir);
+    defer home.deinit();
+    const tone: [1600]f32 = @splat(0.01);
+    const wav = try audio_mod.encodeWav(gpa, &tone, audio_mod.target_rate);
+    defer gpa.free(wav);
+
+    // S4: the last entry's audio is garbage, so the good fix before it
+    // must not be stored or learned either.
+    const bad = try testBundle(gpa, &.{
+        .{ "kind=fix\nheard=written in Puresig.\n", "written in pure Zig.", wav },
+        .{ "kind=confirm\n", "fine", "not audio at all" },
+    });
+    defer gpa.free(bad);
+    try std.testing.expectError(error.BadBundle, importBundle(gpa, &home, bad, "laptop"));
+    try std.testing.expectEqual(@as(u32, 1), home.next_sample);
+    try std.testing.expectEqual(@as(usize, 0), home.rules.items.len);
+    try std.testing.expectEqual(@as(usize, 0), home.words.count());
+    // Trailing bytes and too many entries are rejected too.
+    const one = try testBundle(gpa, &.{.{ "kind=confirm\n", "fine", wav }});
+    defer gpa.free(one);
+    const trailing = try std.mem.concat(gpa, u8, &.{ one, "x" });
+    defer gpa.free(trailing);
+    try std.testing.expectError(error.BadBundle, importBundle(gpa, &home, trailing, "laptop"));
+    var many: [12]u8 = undefined;
+    @memcpy(many[0..8], bundle_magic);
+    std.mem.writeInt(u32, many[8..12], 0, .little);
+    const huge = try std.mem.concat(gpa, u8, &.{ &many, "\x00\x00\x00\x00", &[4]u8{ 0x01, 0x04, 0, 0 } });
+    defer gpa.free(huge);
+    try std.testing.expectError(error.BadBundle, importBundle(gpa, &home, huge, "laptop"));
+
+    // S3: control characters never reach the files; the session's name is the source.
+    const ctl = try testBundle(gpa, &.{.{ "kind=fix\nsource=evil\nheard=meet Bobbie\x1b[2J today\n", "meet Bobby\x07 today\n", wav }});
+    defer gpa.free(ctl);
+    const rep = try importBundle(gpa, &home, ctl, "phone");
+    try std.testing.expectEqual(@as(u32, 1), rep.samples);
+    try std.testing.expectEqual(@as(u32, 1), rep.fixes);
+    for (home.rules.items) |r| {
+        for (r.to) |c| try std.testing.expect(c >= 0x20 and c != 0x7f);
+        try std.testing.expectEqualStrings("phone", r.source);
+    }
+    var nb: [48]u8 = undefined;
+    const meta = try Io.Dir.cwd().readFileAlloc(io, try home.path(try std.fmt.bufPrint(&nb, "samples/{d:0>6}.meta", .{1})), gpa, .limited(4096));
+    defer gpa.free(meta);
+    try std.testing.expect(std.mem.indexOf(u8, meta, "source=phone\n") != null);
+    try std.testing.expect(std.mem.indexOfScalar(u8, meta, 0x1b) == null);
+    const txt = try Io.Dir.cwd().readFileAlloc(io, try home.path(try std.fmt.bufPrint(&nb, "samples/{d:0>6}.txt", .{1})), gpa, .limited(4096));
+    defer gpa.free(txt);
+    try std.testing.expectEqualStrings("meet Bobby  today", txt);
+
+    // S2: one bundle teaches at most max_bundle_new_rules rules.
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var list: std.ArrayList([3][]const u8) = .empty;
+    for (0..max_bundle_new_rules + 20) |i| {
+        const m = try std.fmt.allocPrint(a, "kind=fix\nheard=say wrongword{d} now\n", .{i});
+        const t = try std.fmt.allocPrint(a, "say Right{d} now", .{i});
+        try list.append(a, .{ m, t, wav });
+    }
+    const big = try testBundle(gpa, list.items);
+    defer gpa.free(big);
+    const before = home.rules.items.len;
+    _ = try importBundle(gpa, &home, big, "phone");
+    try std.testing.expectEqual(before + max_bundle_new_rules, home.rules.items.len);
+}
+
+test "commitExport: through = maxInt(u32) ends and records only real ids" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer gpa.free(dir);
+    var dev = try Profile.load(gpa, io, dir);
+    defer dev.deinit();
+    const audio: [800]f32 = @splat(0);
+    _ = try profile_mod.testSample(&dev, gpa, &audio, "one");
+    try commitExport(&dev, std.math.maxInt(u32));
+    try std.testing.expectEqual(@as(u32, 1), dev.exported);
+    var again = try Profile.load(gpa, io, dir);
+    defer again.deinit();
+    try std.testing.expectEqual(@as(u32, 2), again.next_sample);
+}
+
+test "importUpdate: a bad adapter changes nothing" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp.sub_path});
+    defer gpa.free(dir);
+    var dev = try Profile.load(gpa, io, dir);
+    defer dev.deinit();
+
+    const build = struct {
+        fn update(g: Allocator, adapter: []const u8) ![]u8 {
+            var out: std.ArrayList(u8) = .empty;
+            errdefer out.deinit(g);
+            try out.appendSlice(g, update_magic);
+            try putInt(g, &out, 3);
+            try putBytes(g, &out, adapter);
+            try putBytes(g, &out, "puresig => pure Zig\n");
+            try putBytes(g, &out, "5\tZig\n");
+            return out.toOwnedSlice(g);
+        }
+    };
+    // Header says 1 layer of width 2 at rank 1 (44 parameters) but carries one.
+    var bad_ad: [28]u8 = @splat(0);
+    @memcpy(bad_ad[0..8], "STTLORA1");
+    std.mem.writeInt(u32, bad_ad[8..12], 1, .little);
+    std.mem.writeInt(u32, bad_ad[12..16], 2, .little);
+    std.mem.writeInt(u32, bad_ad[16..20], 1, .little);
+    std.mem.writeInt(u32, bad_ad[20..24], @bitCast(@as(f32, 2)), .little);
+    const bad = try build.update(gpa, &bad_ad);
+    defer gpa.free(bad);
+    try std.testing.expectError(error.BadAdapterFile, importUpdate(gpa, &dev, bad));
+    try std.testing.expectEqual(@as(u32, 0), dev.version);
+    try std.testing.expectEqual(@as(usize, 0), dev.rules.items.len);
+    try std.testing.expectError(error.FileNotFound, Io.Dir.cwd().statFile(io, try dev.path("adapter.bin"), .{}));
+
+    // The same header with all 44 parameters is accepted.
+    const good_ad = try gpa.alloc(u8, 24 + 44 * 4);
+    defer gpa.free(good_ad);
+    @memset(good_ad, 0);
+    @memcpy(good_ad[0..24], bad_ad[0..24]);
+    const good = try build.update(gpa, good_ad);
+    defer gpa.free(good);
+    try std.testing.expectEqual(@as(u32, 3), try importUpdate(gpa, &dev, good));
+    try std.testing.expectEqual(@as(usize, 1), dev.rules.items.len);
+    _ = try Io.Dir.cwd().statFile(io, try dev.path("adapter.bin"), .{});
 }

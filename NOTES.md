@@ -6,10 +6,11 @@ stt is an event-driven (no polling: `tick` returns its next deadline) library th
 (`stt.Home`, NVIDIA GPU) and runs on the Snapdragon laptop (`stt-local` /
 `stt.Local`, on the NPU). Portal moves audio in and text out; stt has no server, mic
 capture, voice detection or CPU inference path anymore (all removed
-2026-11-11). Audio decoding comes from the sibling `../Audio` library
-(path dependency). Note that edits in progress there can break this build.
+2026-11-11). Audio decoding comes from the `Audio` library, a URL package
+pinned in `build.zig.zon` (`zig build --fork=../Audio` builds against a local
+checkout).
 
-Dev box: i5-14400F + NVIDIA RTX 4060 (8 GB, driver 610, sm_89).
+Tested on an NVIDIA RTX 40-series GPU (sm_89, 8 GB).
 
 ## Laptop: stt.Local and stt-local (2026-11-12)
 
@@ -28,11 +29,9 @@ Dev box: i5-14400F + NVIDIA RTX 4060 (8 GB, driver 610, sm_89).
   `not_found` only maps FileNotFound. `set_learning` is an extra op.
   `src/local_protocol_test.zig` spawns the built exe and checks ready, rid
   echo, error codes, transcription and the EOF exit.
-- aarch64-windows: `zig build -Dtarget=aarch64-windows` builds only
-  `stt-local`. `gpu/cuda.zig:77` (`@ptrCast(p)` of a GetProcAddress result)
-  fails there with "increases pointer alignment"; it needs `@ptrCast(@alignCast(p))`.
-  Until that is fixed, `transcriber.cuda_compiled` compiles the cuda backend
-  out on Windows on Arm and build.zig skips the `stt` CLI there.
+- aarch64-windows: `zig build -Dtarget=aarch64-windows` builds `stt-local`
+  and the `stt` CLI; the NPU engine (and so TranslateNPU and the QAIRT SDK) is
+  compiled only for this target (or with `-Dnpu`).
 
 ## NPU handover (2026-11-12)
 
@@ -49,8 +48,8 @@ QnnCpu matches the GPU transcript; HTP graphs compile but are unrun. Next:
 Files: `src/npu/engine.zig` (QNN session, cache, interface), `src/npu/net.zig`
 (encoder and decoder-step graphs), `src/npu/graph.zig` (op builder),
 `src/npu/dev/` (separate build: the `npu-dev` check program). The helpers in
-`../TranslateNPU/src/qnn.zig` (`scalarParam`, `tensorParam`, `tensorId`,
-`findBackend`) are committed (TranslateNPU 4c1fe35).
+TranslateNPU's `src/qnn.zig` (`scalarParam`, `tensorParam`, `findBackend`)
+are committed there; stt pins TranslateNPU in `build.zig.zon`.
 
 Design: two graphs built op by op from QNN built-ins, FP16 on the HTP (FP32 on
 QnnCpu). Encoder: reflect-padded audio [3002][160] -> frames (StridedSlice+Concat)
@@ -172,7 +171,7 @@ product: inference A·Wᵀ, training's A·B / Aᵀ·B, and per-head attention.
 
 `schedule.zig`: training starts automatically only inside a daily
 local-time window (default 02:00–06:00) once `min_new_samples` (20) have
-arrived; `trainNow` / `cancelTraining` for manual control. Status and events
+arrived; `trainNow` starts one at once. Status and events
 (`started`/`progress`/`finished`/`failed`/`canceled`) let Portal warn the user
 while it runs. Training runs on a background thread with its own Engine (a
 second weight copy in VRAM). It reads only a snapshot job (`training.collect`)
@@ -226,8 +225,8 @@ dlopen so nothing links frameworks).
   objects of the library with the backend), `coreml-dev`
   (Mac or reference, compares with the GPU; `--export dir` writes the
   packages) and `SttCoreML.app` (`zig build ios` / `ios-sign` on the Mac).
-- On a Mac, building stt needs the QAIRT headers for the qnn module (as on
-  Windows): copy `include/QNN` and set `QNN_SDK_ROOT`.
+- A Mac build needs no QAIRT headers: the NPU engine (the `qnn` module) is
+  compiled only for aarch64-windows or with `-Dnpu`.
 
 Next (Phase 2 continued): ANE-friendly layout ([1][C][1][S], conv 1x1,
 per-head attention) if MLComputePlan shows CPU/GPU fallbacks; MLState (iOS 18)

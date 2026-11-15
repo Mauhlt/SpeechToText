@@ -133,6 +133,21 @@ pub const enabled = @import("stt_options").npu;
 
 pub const Engine = if (enabled) QnnEngine else NoNpu;
 
+/// Bytes of a tensor of `dims` with `elem`-byte elements, or null on
+/// overflow (checked: this build has no runtime safety checks, and the
+/// dimensions come from a cache file on disk).
+fn tensorBytes(elem: usize, dims: []const u32) ?usize {
+    var n: usize = elem;
+    for (dims) |d| n = std.math.mul(usize, n, d) catch return null;
+    return n;
+}
+
+test tensorBytes {
+    try std.testing.expectEqual(@as(?usize, 2 * 3 * 4 * 2), tensorBytes(2, &.{ 3, 4, 2 }));
+    const big = std.math.maxInt(u32);
+    try std.testing.expectEqual(@as(?usize, null), tensorBytes(4, &.{ big, big, big }));
+}
+
 /// The engine of a build without the NPU: same calls as QnnEngine, but it
 /// can never be created.
 const NoNpu = struct {
@@ -667,8 +682,8 @@ const QnnEngine = struct {
                 return error.BadGraph;
             };
             const is_int = v.dataType == c.QNN_DATATYPE_INT_32;
-            var n: usize = if (is_int) 4 else e.dt.size();
-            for (v.dimensions[0..v.rank]) |d| n *= d;
+            // Dimensions come from the cache file: overflow is a bad graph.
+            const n = tensorBytes(if (is_int) 4 else e.dt.size(), v.dimensions[0..v.rank]) orelse return error.BadGraph;
             if (n != buf.len or (!is_int and v.dataType != e.dt.qnnType())) {
                 log.warn("graph tensor {s}: {d} bytes, host buffer {d}", .{ nm, n, buf.len });
                 return error.BadGraph;

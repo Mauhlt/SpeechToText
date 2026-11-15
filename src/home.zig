@@ -18,7 +18,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Model = @import("model.zig").Model;
-const Profile = @import("profile.zig").Profile;
+const profile_mod = @import("profile.zig");
+const Profile = profile_mod.Profile;
 const transcriber = @import("transcriber.zig");
 const Transcriber = transcriber.Transcriber;
 const service = @import("service.zig");
@@ -133,16 +134,6 @@ pub const Home = struct {
         h.notify();
     }
 
-    pub fn setSchedule(h: *Home, cfg: schedule.Config) void {
-        {
-            h.lock.lockUncancelable(h.io);
-            defer h.lock.unlock(h.io);
-            h.cfg.schedule = cfg;
-            h.refreshStatusLocked();
-        }
-        h.notify();
-    }
-
     // ------------------------------------------------------------ transcription
 
     /// Transcribes an audio file's bytes (WAV, MP3 or QOA; any rate/channels)
@@ -184,11 +175,62 @@ pub const Home = struct {
 
     // ------------------------------------------------------------ sync
 
-    pub fn importBundle(h: *Home, gpa: Allocator, bytes: []const u8) !sync.ImportReport {
+    /// Stores a sync bundle received from `source_device`: the device the
+    /// caller authenticated (the bundle's own name is ignored). Its samples,
+    /// rules and words are recorded under that name (`forgetSource`).
+    /// Checking, decoding and diffing happen before the lock is taken, so
+    /// transcription only waits for the bounded store step.
+    pub fn importBundle(h: *Home, gpa: Allocator, bytes: []const u8, source_device: []const u8) !sync.ImportReport {
+        var pb = try sync.prepareBundle(gpa, bytes, source_device);
+        defer pb.deinit();
         const r = blk: {
             h.lock.lockUncancelable(h.io);
             defer h.lock.unlock(h.io);
-            const r = try sync.importBundle(gpa, &h.profile, bytes);
+            const r = try sync.commitBundle(gpa, &h.profile, &pb);
+            h.refreshStatusLocked();
+            break :blk r;
+        };
+        h.notify();
+        return r;
+    }
+
+    /// Forgets everything `device` taught (its samples, rules and words),
+    /// e.g. when it is unpaired. The current adapter keeps what it already
+    /// learned from it until the next training run.
+    pub fn forgetSource(h: *Home, device: []const u8) !profile_mod.ForgetReport {
+        const r = blk: {
+            h.lock.lockUncancelable(h.io);
+            defer h.lock.unlock(h.io);
+            const r = try h.profile.forgetSource(device);
+            const pt = try h.profile.promptText(h.gpa, h.cfg.base_prompt);
+            defer h.gpa.free(pt);
+            try h.tr.setPrompt(pt);
+            h.refreshStatusLocked();
+            break :blk r;
+        };
+        h.notify();
+        return r;
+    }
+
+    // ------------------------------------------------------------ storage
+
+    /// Bytes the profile folder holds (see `Profile.profileBytes`).
+    pub fn profileBytes(h: *Home) !u64 {
+        h.lock.lockUncancelable(h.io);
+        defer h.lock.unlock(h.io);
+        return h.profile.profileBytes();
+    }
+
+    /// Storage cap: deletes the oldest samples until the profile folder is
+    /// at most `target_bytes` (see `Profile.deleteOldestSamples`; the
+    /// vocabulary, rules and adapter stay). Allowed while training runs:
+    /// the run reads its samples once at its start and skips any that are
+    /// gone, and a run left with none ends with error.NoSamples.
+    pub fn deleteOldestSamples(h: *Home, target_bytes: u64) !profile_mod.StorageReport {
+        const r = blk: {
+            h.lock.lockUncancelable(h.io);
+            defer h.lock.unlock(h.io);
+            const r = try h.profile.deleteOldestSamples(target_bytes);
             h.refreshStatusLocked();
             break :blk r;
         };
@@ -219,11 +261,6 @@ pub const Home = struct {
             try h.startLocked();
         }
         h.notify();
-    }
-
-    /// Asks a running training to stop; the previous adapter stays in use.
-    pub fn cancelTraining(h: *Home) void {
-        h.cancel_flag.store(true, .release);
     }
 
     /// Does whatever is due: confirms transcripts whose silence period has
@@ -286,6 +323,13 @@ pub const Home = struct {
         errdefer {
             h.job.?.deinit();
             h.job = null;
+        }
+        if (h.job.?.samples.len == 0) {
+            // Every sample was deleted (storage cap, forgetSource): nothing
+            // is pending any more, so the schedule doesn't retry.
+            h.profile.trained = @max(h.profile.trained, h.job.?.newest);
+            try h.profile.saveState();
+            return error.NoSamples;
         }
         h.cancel_flag.store(false, .release);
         {

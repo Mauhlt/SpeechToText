@@ -234,6 +234,7 @@ pub const Local = struct {
     }
 
     /// Installs an update from home (`Home.exportUpdate`): the adapter is
+    /// checked against the model first (a bad one changes nothing), then
     /// stored in the profile and switched into the engine right away, and
     /// the rules and vocabulary apply from the next transcription. Returns
     /// the version now installed (unchanged if the update isn't newer).
@@ -241,7 +242,7 @@ pub const Local = struct {
         l.lock.lockUncancelable(l.io);
         defer l.lock.unlock(l.io);
         const before = l.profile.version;
-        const v = try sync.importUpdate(gpa, &l.profile, bytes);
+        const v = try sync.importUpdateFor(gpa, &l.profile, bytes, &l.model);
         if (v != before) {
             if (try training.loadAdapter(l.gpa, &l.profile, &l.model)) |ad_| {
                 var ad = ad_;
@@ -316,7 +317,7 @@ pub const Local = struct {
             const bytes = try Io.Dir.cwd().readFileAlloc(l.io, path, gpa, .limited(1 << 30));
             defer gpa.free(bytes);
             if (std.mem.startsWith(u8, bytes, "STTUPD01")) {
-                _ = try sync.importUpdate(gpa, &l.profile, bytes);
+                _ = try sync.importUpdateFor(gpa, &l.profile, bytes, &l.model);
             } else if (l.cfg.adapter_version > l.profile.version or !try l.profileHasAdapter()) {
                 pkg = try Adapter.parse(gpa, bytes, &l.model);
             }

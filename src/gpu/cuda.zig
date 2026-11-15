@@ -57,7 +57,10 @@ var loaded: enum { no, yes, failed } = .no;
 var load_mutex: std.atomic.Mutex = .unlocked;
 
 // Windows: LoadLibrary/GetProcAddress from kernel32 (std.DynLib doesn't cover Windows).
-extern "kernel32" fn LoadLibraryA(name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
+extern "kernel32" fn LoadLibraryExA(name: [*:0]const u8, file: ?*anyopaque, flags: u32) callconv(.winapi) ?*anyopaque;
+/// nvcuda.dll is installed by the NVIDIA driver into System32; look only
+/// there, never in the current folder or on PATH (a planted copy).
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x800;
 extern "kernel32" fn GetProcAddress(module: *anyopaque, name: [*:0]const u8) callconv(.winapi) ?*anyopaque;
 
 fn loadApi() !void {
@@ -71,7 +74,7 @@ fn loadApi() !void {
     errdefer loaded = .failed;
     if (!supported) return error.CudaUnavailable;
     if (builtin.os.tag == .windows) {
-        const lib = LoadLibraryA("nvcuda.dll") orelse return error.CudaUnavailable;
+        const lib = LoadLibraryExA("nvcuda.dll", null, LOAD_LIBRARY_SEARCH_SYSTEM32) orelse return error.CudaUnavailable;
         inline for (@typeInfo(Api).@"struct".field_names) |name| {
             const p = GetProcAddress(lib, name) orelse return error.CudaUnavailable;
             @field(api, name) = @ptrCast(@alignCast(p));
@@ -250,3 +253,18 @@ pub const Gpu = struct {
         return ms;
     }
 };
+
+test "driver library loads from System32 only (skipped without an NVIDIA driver)" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    // A DLL in the current folder is not found with the System32-only search
+    // (the default search order would load it).
+    const io = std.testing.io;
+    const name = "stt-planted-test.dll";
+    const exe = std.Io.Dir.cwd().readFileAlloc(io, "C:\\Windows\\System32\\version.dll", std.testing.allocator, .limited(16 << 20)) catch return error.SkipZigTest;
+    defer std.testing.allocator.free(exe);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = name, .data = exe });
+    defer std.Io.Dir.cwd().deleteFile(io, name) catch {};
+    try std.testing.expect(LoadLibraryExA(name, null, LOAD_LIBRARY_SEARCH_SYSTEM32) == null);
+    // The real driver, where there is one, loads from System32.
+    loadApi() catch return error.SkipZigTest;
+}

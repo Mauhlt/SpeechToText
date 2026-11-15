@@ -24,6 +24,8 @@ pub const Tokenizer = struct {
     }
 
     /// Encodes `text` to token ids. Caller owns the result.
+    /// Linear in the text length: merging is quadratic per chunk, so chunks
+    /// (words) longer than `max_chunk_bytes` are encoded in pieces of that size.
     pub fn encode(t: *const Tokenizer, gpa: Allocator, text: []const u8) ![]u32 {
         var out: std.ArrayList(u32) = .empty;
         errdefer out.deinit(gpa);
@@ -32,7 +34,7 @@ pub const Tokenizer = struct {
 
         var i: usize = 0;
         while (i < text.len) {
-            const end = nextChunk(text, i);
+            const end = @min(nextChunk(text, i), i + max_chunk_bytes);
             try t.encodeChunk(gpa, text[i..end], &bounds, &out);
             i = end;
         }
@@ -63,6 +65,9 @@ pub const Tokenizer = struct {
         }
     }
 };
+
+/// Longest chunk merged as one piece (real words are far shorter).
+pub const max_chunk_bytes = 64;
 
 fn isLetter(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c >= 0x80;
@@ -98,4 +103,26 @@ fn nextChunk(s: []const u8, i: usize) usize {
     while (j < s.len and isSpace(s[j])) j += 1;
     if (j < s.len and j - i > 1) return j - 1;
     return j;
+}
+
+test "encode: long words are split, so the cost stays linear" {
+    const gpa = std.testing.allocator;
+    var t: Tokenizer = .{};
+    defer t.deinit(gpa);
+    try t.ranks.put(gpa, "a", 0);
+    try t.ranks.put(gpa, "aa", 1);
+    try t.ranks.put(gpa, "aaaa", 2);
+    // One 256 KB "word": unbounded, merging it would take ~10^10 steps.
+    const text = try gpa.alloc(u8, 256 * 1024);
+    defer gpa.free(text);
+    @memset(text, 'a');
+    const ids = try t.encode(gpa, text);
+    defer gpa.free(ids);
+    // Each 64-byte piece becomes 16 "aaaa" tokens.
+    try std.testing.expectEqual(text.len / 4, ids.len);
+    for (ids) |id| try std.testing.expectEqual(@as(u32, 2), id);
+    // Short words encode as before.
+    const short = try t.encode(gpa, "aaaaa");
+    defer gpa.free(short);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 0 }, short);
 }
