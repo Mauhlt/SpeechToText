@@ -261,20 +261,30 @@ test "gpu: Local (cuda backend): transcribe, fix, bundle home, adapter update, w
     }
 }
 
-test "Local: the NPU backend is not implemented yet" {
+test "Local: the NPU backend is unavailable in builds without the NPU engine" {
     const gpa = std.testing.allocator;
+    const npu = @import("npu/engine.zig");
+    if (!npu.enabled) {
+        // The stub never touches the model, so this needs no model file.
+        var no_model: Model = undefined;
+        try std.testing.expectError(error.NpuUnavailable, npu.Engine.init(gpa, &no_model, .{}));
+    }
+
+    // Through Local (needs the model).
     Io.Dir.cwd().access(std.testing.io, model_path, .{}) catch return error.SkipZigTest;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const dir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}", .{tmp.sub_path});
     defer gpa.free(dir);
-    const l = local_mod.Local.open(gpa, std.testing.io, .{ .model_path = model_path, .profile_dir = dir }) catch |err| {
-        if (err == error.NpuNotImplemented) return;
-        // The NPU engine exists now but this machine can't run it.
+    const cfg: local_mod.Config = .{ .model_path = model_path, .profile_dir = dir };
+    if (!npu.enabled) {
+        try std.testing.expectError(error.NpuUnavailable, local_mod.Local.open(gpa, std.testing.io, cfg));
+        return;
+    }
+    // A build with the NPU engine: opening needs the QNN runtime and an NPU.
+    const l = local_mod.Local.open(gpa, std.testing.io, cfg) catch |err| {
         std.debug.print("Local NPU open: {t} (skipping)\n", .{err});
         return error.SkipZigTest;
     };
-    // The NPU engine works here: this test has served its purpose.
     l.close();
-    return error.SkipZigTest;
 }
