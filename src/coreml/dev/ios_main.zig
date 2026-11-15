@@ -26,7 +26,7 @@ const G = struct {
     var io: std.Io = undefined;
     var text_view: ?*Object = null;
     var window: ?*Object = null;
-    var lock: std.atomic.Mutex = .unlocked;
+    var lock: std.Io.Mutex = .init;
     var text: std.ArrayList(u8) = .empty;
 };
 
@@ -63,19 +63,19 @@ fn say(comptime fmt: []const u8, args: anytype) void {
     var buf: [1024]u8 = undefined;
     const s = std.fmt.bufPrint(&buf, fmt, args) catch buf[0..];
     objc.log(s);
-    while (!G.lock.tryLock()) std.atomic.spinLoopHint();
+    G.lock.lockUncancelable(G.io);
     G.text.appendSlice(G.gpa, s) catch {};
     G.text.append(G.gpa, '\n') catch {};
-    G.lock.unlock();
+    G.lock.unlock(G.io);
     objc.onMainAsync(null, &showText);
 }
 
 fn showText(_: ?*anyopaque) callconv(.c) void {
     const pool = objc.AutoreleasePool.push();
     defer pool.pop();
-    while (!G.lock.tryLock()) std.atomic.spinLoopHint();
+    G.lock.lockUncancelable(G.io);
     const s = objc.newString(G.text.items);
-    G.lock.unlock();
+    G.lock.unlock(G.io);
     defer if (s) |x| objc.release(x);
     msgSend(void, G.text_view, sel("setText:"), .{s});
 }
@@ -94,8 +94,8 @@ fn work(_: ?*anyopaque) callconv(.c) void {
     const gpa = G.gpa;
     const out = std.fmt.allocPrint(gpa, "{s}/stt-coreml.txt", .{objc.documentsDir()}) catch return;
     defer gpa.free(out);
-    while (!G.lock.tryLock()) std.atomic.spinLoopHint();
-    defer G.lock.unlock();
+    G.lock.lockUncancelable(G.io);
+    defer G.lock.unlock(G.io);
     std.Io.Dir.cwd().writeFile(G.io, .{ .sub_path = out, .data = G.text.items }) catch {};
 }
 
