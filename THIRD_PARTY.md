@@ -1,0 +1,59 @@
+# Third-party material
+
+stt's own code is under the MIT licence in [LICENSE](LICENSE). No third-party
+source code is vendored or ported into this repository. What it uses or
+fetches from elsewhere:
+
+## Model weights and tokenizer (not in this repository)
+
+- **OpenAI Whisper** model weights, including the tokenizer vocabulary stored
+  inside the model file: MIT licence, Copyright (c) 2022 OpenAI
+  (<https://github.com/openai/whisper>). stt reads them from a file the user
+  downloads (README, Setup); nothing is committed here. Keep OpenAI's notice
+  when redistributing a model file (for example in Portal's `stt-model`
+  package, or the iPhone test app that `src/coreml/dev` builds with the tiny
+  model inside).
+- **ggml model files** (`ggml-*.bin`): the Whisper weights converted to the
+  ggml container by the whisper.cpp project, MIT licence, Copyright (c)
+  2023-2024 The ggml authors (<https://github.com/ggerganov/whisper.cpp>).
+  `src/model.zig` reads that format with its own code.
+
+## Fetched dependencies (pinned in build.zig.zon)
+
+- **Audio** (<https://github.com/Mauhlt/Audio>): WAV, MP3 and QOA decoding.
+  Same owner. Its MP3 decoder uses tables and code derived from minimp3
+  (<https://github.com/lieff/minimp3>, CC0); that notice belongs to the Audio
+  repository, not here.
+- **TranslateNPU** (<https://github.com/Mauhlt/TranslateNPU>): QNN bindings,
+  fetched only when the NPU engine is compiled (aarch64-windows or `-Dnpu`).
+  Same owner.
+- **TranslateCoreML** (<https://github.com/Mauhlt/TranslateCoreML>): Core ML
+  program writer and runtime bindings, fetched only for iOS / macOS targets
+  or `-Dcoreml`. Same owner.
+
+## Qualcomm AI Runtime (QAIRT / QNN) SDK
+
+Fetched by TranslateNPU from Qualcomm when the NPU engine is compiled without
+a local SDK (`-Dsdk` or `QNN_SDK_ROOT`); never vendored here. Only its C
+headers are used at build time (translated to Zig bindings); nothing from the
+SDK is committed or shipped. At run time the laptop loads the QNN runtime its
+NPU driver installed. Qualcomm's licence terms for the SDK and runtime apply
+to them, not this repository's MIT licence.
+
+## NVIDIA driver
+
+`src/gpu/cuda.zig` declares the CUDA driver API functions it calls and loads
+the driver library (`nvcuda.dll` from System32, `libcuda.so.1`) at run time.
+No CUDA toolkit, headers or libraries are vendored or linked; the driver is
+NVIDIA's, under NVIDIA's licence, and installed by the user.
+
+## Apple frameworks
+
+The Core ML backend opens Apple's system frameworks at run time (through
+TranslateCoreML) on iOS / macOS. Nothing from Apple's SDKs is vendored.
+
+## Test data
+
+`testdata/hello.wav`: a short spoken test clip used by the tests. Its origin
+is to be confirmed by the owner before publishing (it is not from a
+third-party dataset as far as this repository records).

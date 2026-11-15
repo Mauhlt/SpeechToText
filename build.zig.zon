@@ -31,6 +31,8 @@
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "LICENSE",
+        "THIRD_PARTY.md",
         "src",
         // testdata/hello.wav: packages' tests (Portal's speech tests) use it.
         "testdata",
