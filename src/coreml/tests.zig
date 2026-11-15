@@ -1,11 +1,13 @@
 //! Core ML backend checks that run on any OS (built for iOS / macOS targets,
 //! elsewhere with `zig build test -Dcoreml`). They need
-//! models/ggml-tiny.en.bin and testdata/hello.wav (skipped otherwise); the
-//! comparisons with the GPU also need an NVIDIA GPU (skipped otherwise).
+//! models/ggml-tiny.en.bin (skipped otherwise); the comparisons with the GPU
+//! also need an NVIDIA GPU, and the transcription checks the optional speech
+//! sample (testdata.speech_path, git-ignored), each skipped without it. The
+//! log-mel check runs on generated audio.
 const std = @import("std");
 const Io = std.Io;
 const Model = @import("../model.zig").Model;
-const audio = @import("../audio.zig");
+const testdata = @import("../testdata.zig");
 const Transcriber = @import("../transcriber.zig").Transcriber;
 const gpu = @import("../gpu/engine.zig");
 const Adapter = @import("../adapter.zig").Adapter;
@@ -19,8 +21,9 @@ const model_path = "models/ggml-tiny.en.bin";
 fn loadModel() !Model {
     return Model.load(std.testing.allocator, std.testing.io, model_path) catch error.SkipZigTest;
 }
-fn loadAudio() ![]f32 {
-    return audio.load(std.testing.allocator, std.testing.io, "testdata/hello.wav", .{}) catch error.SkipZigTest;
+/// Real speech for the transcription checks, or skip without the sample.
+fn loadSpeech() ![]f32 {
+    return testdata.speechSamples(std.testing.allocator, std.testing.io);
 }
 
 test "encoder and decoder programs serialize and read back" {
@@ -71,7 +74,8 @@ test "host log-mel matches the GPU's" {
     const gpa = std.testing.allocator;
     var model = try loadModel();
     defer model.deinit();
-    const samples = try loadAudio();
+    // Any audio works for comparing log-mel: generated, not speech.
+    const samples = try testdata.synth(gpa, 5);
     defer gpa.free(samples);
     const g = try gpuEngine(gpa, &model);
     defer g.deinit(gpa);
@@ -95,7 +99,7 @@ test "Core ML programs on the reference interpreter transcribe like the GPU" {
     const gpa = std.testing.allocator;
     var model = try loadModel();
     defer model.deinit();
-    const samples = try loadAudio();
+    const samples = try loadSpeech();
     defer gpa.free(samples);
 
     var gtr = Transcriber.init(gpa, &model, .{}) catch return error.SkipZigTest;
@@ -118,7 +122,7 @@ test "Local on Core ML (reference runtime): an update swaps the adapter in witho
     const Profile = @import("../profile.zig").Profile;
     const sync = @import("../sync.zig");
     Io.Dir.cwd().access(io, model_path, .{}) catch return error.SkipZigTest;
-    const samples = try loadAudio();
+    const samples = try loadSpeech();
     defer gpa.free(samples);
 
     var tmp = std.testing.tmpDir(.{});

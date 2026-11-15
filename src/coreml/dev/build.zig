@@ -16,7 +16,8 @@
 //!   zig build ios                    (Mac) zig-out/ios/SttCoreML.app, with
 //!                                    the model (-Dios-model, default
 //!                                    models/ggml-tiny.en.bin) and
-//!                                    testdata/hello.wav inside
+//!                                    the speech sample (-Dios-wav, default
+//!                                    testdata/speech.wav, git-ignored) inside
 //!   zig build ios-sign               sign it (PORTAL_SIGN_IDENTITY,
 //!                                    PORTAL_PROVISIONING_PROFILE, PORTAL_TEAM_ID)
 const std = @import("std");
@@ -71,6 +72,9 @@ fn iosTarget(b: *std.Build) std.Build.ResolvedTarget {
 fn addIos(b: *std.Build) void {
     const bundle_id = b.option([]const u8, "ios-bundle-id", "SttCoreML.app bundle id (default local.stt.coreml; must match the provisioning profile)") orelse "local.stt.coreml";
     const model: std.Build.LazyPath = if (b.option([]const u8, "ios-model", "ggml model file to bundle (default models/ggml-tiny.en.bin of SpeechToText)")) |p| .{ .cwd_relative = p } else b.path("../../../models/ggml-tiny.en.bin");
+    // The speech sample the app transcribes: a recording of your own (the repo
+    // ships no audio; THIRD_PARTY.md, Test data).
+    const speech: std.Build.LazyPath = if (b.option([]const u8, "ios-wav", "speech sample to bundle (default testdata/speech.wav of SpeechToText, git-ignored)")) |p| .{ .cwd_relative = p } else b.path("../../../testdata/speech.wav");
     const env = &b.graph.environ_map;
     const sdk = b.option([]const u8, "ios-sdk", "iPhoneOS SDK path (env IOS_SDK; default: xcrun --sdk iphoneos --show-sdk-path on a Mac)") orelse env.get("IOS_SDK") orelse if (b.graph.host.result.os.tag == .macos)
         std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "iphoneos", "--show-sdk-path" }), " \r\n")
@@ -114,7 +118,7 @@ fn addIos(b: *std.Build) void {
     _ = app.add("SttCoreML.app/Info.plist", infoPlist(b, bundle_id));
     _ = app.add("SttCoreML.app/PkgInfo", "APPL????");
     _ = app.addCopyFile(model, "SttCoreML.app/stt/model.bin");
-    _ = app.addCopyFile(b.path("../../../testdata/hello.wav"), "SttCoreML.app/stt/hello.wav");
+    _ = app.addCopyFile(speech, "SttCoreML.app/stt/speech.wav");
     const install = b.addInstallDirectory(.{ .source_dir = app.getDirectory().path(b, "SttCoreML.app"), .install_dir = .prefix, .install_subdir = "ios/SttCoreML.app" });
     app_step.dependOn(&install.step);
 

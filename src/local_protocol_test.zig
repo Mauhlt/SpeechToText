@@ -1,8 +1,13 @@
-//! End-to-end test of the `stt-local` JSON-lines protocol: spawns the built
-//! executable on the cuda backend (needs models/ggml-tiny.en.bin,
-//! testdata/hello.wav and an NVIDIA GPU; skipped otherwise).
+//! End-to-end tests of the `stt-local` JSON-lines protocol: they spawn the
+//! built executable on the cuda backend (need models/ggml-tiny.en.bin and an
+//! NVIDIA GPU; skipped otherwise). The framing test sends generated audio
+//! (stt.testdata.synthWav); the transcription test needs real speech, the
+//! optional speech sample (stt.testdata.speech_path, git-ignored), and is
+//! skipped without it.
 const std = @import("std");
 const Io = std.Io;
+const stt = @import("stt");
+const testdata = stt.testdata;
 const exe_path = @import("stt_local_build").exe_path;
 
 const model_path = "models/ggml-tiny.en.bin";
@@ -46,13 +51,37 @@ fn b64(gpa: std.mem.Allocator, bytes: []const u8) ![]u8 {
     return out;
 }
 
-test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit on EOF" {
+/// The 16 kHz mono s16le samples of `wav` (any WAV / MP3 / QOA) for a
+/// `pcm_s16le_b64` request: decoded, then re-encoded by stt.audio.encodeWav,
+/// whose data chunk is the PCM. Caller owns the result.
+fn pcmOf(gpa: std.mem.Allocator, wav: []const u8) ![]u8 {
+    const samples = try stt.audio.decode(gpa, wav, .{});
+    defer gpa.free(samples);
+    const canon = try stt.audio.encodeWav(gpa, samples, stt.audio.target_rate);
+    defer gpa.free(canon);
+    const at = std.mem.indexOf(u8, canon, "data").? + 8;
+    return gpa.dupe(u8, canon[at..]);
+}
+
+/// Sends `wav` as raw PCM (rid 13) and as a file (rid 14).
+fn sendAudio(gpa: std.mem.Allocator, w: *Io.Writer, wav: []const u8) !void {
+    const pcm = try pcmOf(gpa, wav);
+    defer gpa.free(pcm);
+    const pcm_enc = try b64(gpa, pcm);
+    defer gpa.free(pcm_enc);
+    try w.print("{{\"rid\":13,\"op\":\"transcribe\",\"pcm_s16le_b64\":\"{s}\"}}\n", .{pcm_enc});
+    const enc = try b64(gpa, wav);
+    defer gpa.free(enc);
+    try w.print("{{\"rid\":14,\"op\":\"transcribe\",\"wav_b64\":\"{s}\"}}\n", .{enc});
+}
+
+/// Runs stt-local (cuda backend, fresh profile), checks its ready event,
+/// runs `body` with its stdout reader and stdin writer, then closes stdin:
+/// the program must exit cleanly within 2 s. Skips without the model or a GPU.
+fn session(wav: []const u8, comptime body: fn (std.mem.Allocator, []const u8, *Io.Reader, *Io.Writer) anyerror!void) !void {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const cwd = Io.Dir.cwd();
-    cwd.access(io, model_path, .{}) catch return error.SkipZigTest;
-    const wav = cwd.readFileAlloc(io, "testdata/hello.wav", gpa, .limited(16 << 20)) catch return error.SkipZigTest;
-    defer gpa.free(wav);
+    Io.Dir.cwd().access(io, model_path, .{}) catch return error.SkipZigTest;
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -76,7 +105,7 @@ test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit o
     var in_w = Io.File.Writer.initStreaming(child.stdin.?, io, &in_buf);
     const w = &in_w.interface;
 
-    // 1. The first line is the ready event.
+    // The first line is the ready event.
     const first = (try r.takeDelimiter('\n')) orelse {
         // No GPU: stt-local exits before ready.
         _ = child.wait(io) catch {};
@@ -94,15 +123,43 @@ test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit o
         try std.testing.expect(fieldStr(p.value, "version").len > 0);
     }
 
-    // 2. Malformed JSON: bad_request with rid 0.
+    try body(gpa, wav, r, w);
+
+    // Closing stdin stops the program; it must exit cleanly within 2 s.
+    w.flush() catch {};
+    child.stdin.?.close(io);
+    child.stdin = null;
+    const t0 = Io.Clock.awake.now(io);
+    while (try r.takeDelimiter('\n')) |raw| {
+        const p = try std.json.parseFromSlice(std.json.Value, gpa, raw, .{});
+        defer p.deinit();
+        try std.testing.expect(field(p.value, "event") != null); // only events after the last reply
+    }
+    const term = try child.wait(io);
+    waited = true;
+    const ms = t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
+    try std.testing.expect(term == .exited and term.exited == 0);
+    try std.testing.expect(ms < 2000);
+}
+
+test "stt-local protocol: ready, rid echo, error codes, audio framing, clean exit on EOF" {
+    const gpa = std.testing.allocator;
+    // Generated audio (not speech): only the framing is checked here.
+    const wav = try testdata.synthWav(gpa, 3);
+    defer gpa.free(wav);
+    try session(wav, framing);
+}
+
+fn framing(gpa: std.mem.Allocator, wav: []const u8, r: *Io.Reader, w: *Io.Writer) !void {
+    // Malformed JSON: bad_request with rid 0.
     try w.writeAll("this is not json\n");
-    // 3. Bad audio.
+    // Bad audio.
     {
         const junk = try b64(gpa, "definitely not a wav file");
         defer gpa.free(junk);
         try w.print("{{\"rid\":11,\"op\":\"transcribe\",\"wav_b64\":\"{s}\"}}\n", .{junk});
     }
-    // 4. Too long: 121 s of s16le silence.
+    // Too long: 121 s of s16le silence.
     {
         const zeros = try gpa.alloc(u8, 121 * 16000 * 2 + 4);
         defer gpa.free(zeros);
@@ -111,16 +168,8 @@ test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit o
         defer gpa.free(enc);
         try w.print("{{\"rid\":12,\"op\":\"transcribe\",\"pcm_s16le_b64\":\"{s}\"}}\n", .{enc});
     }
-    // 5. Real transcriptions: raw PCM (hello.wav is 16 kHz mono s16) and the WAV file.
-    {
-        const at = std.mem.indexOf(u8, wav, "data").? + 8;
-        const pcm = try b64(gpa, wav[at..]);
-        defer gpa.free(pcm);
-        try w.print("{{\"rid\":13,\"op\":\"transcribe\",\"pcm_s16le_b64\":\"{s}\"}}\n", .{pcm});
-        const enc = try b64(gpa, wav);
-        defer gpa.free(enc);
-        try w.print("{{\"rid\":14,\"op\":\"transcribe\",\"wav_b64\":\"{s}\"}}\n", .{enc});
-    }
+    // Audio as raw PCM and as a WAV file: transcribed (whatever the text).
+    try sendAudio(gpa, w, wav);
     try w.writeAll("{\"rid\":15,\"op\":\"feedback\",\"id\":999999,\"text\":\"x\",\"ok\":true}\n");
     try w.writeAll("{\"rid\":16,\"op\":\"nope\"}\n");
     try w.writeAll("{\"rid\":17,\"op\":\"status\"}\n");
@@ -137,7 +186,6 @@ test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit o
         .{ .rid = 16, .err = "bad_request" },
         .{ .rid = 17, .err = null },
     };
-    var id14: i64 = 0;
     for (expected) |e| {
         const p = try nextReply(gpa, r);
         defer p.deinit();
@@ -149,39 +197,43 @@ test "stt-local protocol: ready, rid echo, error codes, transcribe, clean exit o
             try std.testing.expect(field(p.value, "error") == null);
         }
         if (e.rid == 13 or e.rid == 14) {
-            try std.testing.expect(std.mem.indexOf(u8, fieldStr(p.value, "text"), "Hello") != null);
-            try std.testing.expect(fieldInt(p.value, "id").? > 0);
-            if (e.rid == 14) id14 = fieldInt(p.value, "id").?;
+            try std.testing.expect(field(p.value, "text").? == .string);
+            try std.testing.expect(fieldInt(p.value, "id").? >= 0);
         }
         if (e.rid == 17) {
             try std.testing.expectEqual(@as(?i64, 1), fieldInt(p.value, "proto"));
             try std.testing.expectEqualStrings("cuda", fieldStr(p.value, "backend"));
         }
     }
+}
 
-    // A fix for the WAV transcript is learned.
-    try w.print("{{\"rid\":18,\"op\":\"feedback\",\"id\":{d},\"text\":\"Hello world. This is a test of speech recognition written in pure Zig.\",\"ok\":true}}\n", .{id14});
+test "stt-local protocol: transcribes speech (PCM and file) and learns a fix" {
+    const gpa = std.testing.allocator;
+    // Needs real speech: skipped without the speech sample, as without the model.
+    const wav = try testdata.speechFile(gpa, std.testing.io);
+    defer gpa.free(wav);
+    try session(wav, speech);
+}
+
+fn speech(gpa: std.mem.Allocator, wav: []const u8, r: *Io.Reader, w: *Io.Writer) !void {
+    try sendAudio(gpa, w, wav);
     try w.flush();
-    {
+    var id14: i64 = 0;
+    for ([_]i64{ 13, 14 }) |rid| {
         const p = try nextReply(gpa, r);
         defer p.deinit();
-        try std.testing.expectEqual(@as(?i64, 18), fieldInt(p.value, "rid"));
-        try std.testing.expectEqualStrings("learned", fieldStr(p.value, "outcome"));
+        try std.testing.expectEqual(@as(?i64, rid), fieldInt(p.value, "rid"));
+        try std.testing.expect(field(p.value, "error") == null);
+        try std.testing.expect(std.mem.indexOf(u8, fieldStr(p.value, "text"), "Hello") != null);
+        try std.testing.expect(fieldInt(p.value, "id").? > 0);
+        if (rid == 14) id14 = fieldInt(p.value, "id").?;
     }
 
-    // Closing stdin stops the program; it must exit cleanly within 2 s.
-    in_w.interface.flush() catch {};
-    child.stdin.?.close(io);
-    child.stdin = null;
-    const t0 = Io.Clock.awake.now(io);
-    while (try r.takeDelimiter('\n')) |raw| {
-        const p = try std.json.parseFromSlice(std.json.Value, gpa, raw, .{});
-        defer p.deinit();
-        try std.testing.expect(field(p.value, "event") != null); // only events after the last reply
-    }
-    const term = try child.wait(io);
-    waited = true;
-    const ms = t0.durationTo(Io.Clock.awake.now(io)).toMilliseconds();
-    try std.testing.expect(term == .exited and term.exited == 0);
-    try std.testing.expect(ms < 2000);
+    // A fix for the WAV transcript is learned.
+    try w.print("{{\"rid\":18,\"op\":\"feedback\",\"id\":{d},\"text\":\"{s}\",\"ok\":true}}\n", .{ id14, testdata.speech_text });
+    try w.flush();
+    const p = try nextReply(gpa, r);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(?i64, 18), fieldInt(p.value, "rid"));
+    try std.testing.expectEqualStrings("learned", fieldStr(p.value, "outcome"));
 }

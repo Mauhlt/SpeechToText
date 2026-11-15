@@ -1,31 +1,30 @@
-//! GPU integration tests. They need models/ggml-tiny.en.bin,
-//! testdata/hello.wav and an NVIDIA GPU, and are skipped otherwise.
+//! GPU integration tests. They need models/ggml-tiny.en.bin and an NVIDIA
+//! GPU, and are skipped otherwise. The transcription tests also need the
+//! optional speech sample (testdata.speech_path, git-ignored) and are skipped
+//! without it; the gradient check runs on generated audio.
 const std = @import("std");
 const Io = std.Io;
 const Model = @import("model.zig").Model;
 const Transcriber = @import("transcriber.zig").Transcriber;
 const Adapter = @import("adapter.zig").Adapter;
 const trainer = @import("gpu/trainer.zig");
-const audio = @import("audio.zig");
 const home_mod = @import("home.zig");
 const schedule = @import("schedule.zig");
+const testdata = @import("testdata.zig");
 
 const model_path = "models/ggml-tiny.en.bin";
-const text = "Hello world. This is a test of speech recognition written in pure Zig.";
+const text = testdata.speech_text;
 
 fn loadModel() !Model {
     return Model.load(std.testing.allocator, std.testing.io, model_path) catch error.SkipZigTest;
-}
-
-fn loadHello() ![]f32 {
-    return audio.load(std.testing.allocator, std.testing.io, "testdata/hello.wav", .{}) catch error.SkipZigTest;
 }
 
 test "gpu: transcribe" {
     const gpa = std.testing.allocator;
     var model = try loadModel();
     defer model.deinit();
-    const samples = try loadHello();
+    // Needs real speech: skipped without the speech sample.
+    const samples = try testdata.speechSamples(gpa, std.testing.io);
     defer gpa.free(samples);
     var tr = Transcriber.init(gpa, &model, .{}) catch return error.SkipZigTest;
     defer tr.deinit();
@@ -38,7 +37,8 @@ test "gpu: LoRA gradients match finite differences" {
     const gpa = std.testing.allocator;
     var model = try loadModel();
     defer model.deinit();
-    const samples = try loadHello();
+    // Any audio works for a gradient check: generated, not speech.
+    const samples = try testdata.synth(gpa, 3);
     defer gpa.free(samples);
     var ad = try Adapter.init(gpa, &model, 8, 16, 1);
     defer ad.deinit(gpa);
@@ -98,9 +98,10 @@ const Events = struct {
 test "gpu: home transcribes, learns from a fix, trains, and reports it" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const wav_bytes = Io.Dir.cwd().readFileAlloc(io, "testdata/hello.wav", gpa, .limited(16 << 20)) catch return error.SkipZigTest;
-    defer gpa.free(wav_bytes);
     Io.Dir.cwd().access(io, model_path, .{}) catch return error.SkipZigTest;
+    // Needs real speech (the transcripts are checked): skipped without the speech sample.
+    const wav_bytes = try testdata.speechFile(gpa, io);
+    defer gpa.free(wav_bytes);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -177,9 +178,10 @@ fn openLocalCuda(dir: []const u8, svc: @import("service.zig").Options) !*local_m
 test "gpu: Local (cuda backend): transcribe, fix, bundle home, adapter update, wakeups" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
-    const wav_bytes = Io.Dir.cwd().readFileAlloc(io, "testdata/hello.wav", gpa, .limited(16 << 20)) catch return error.SkipZigTest;
-    defer gpa.free(wav_bytes);
     Io.Dir.cwd().access(io, model_path, .{}) catch return error.SkipZigTest;
+    // Needs real speech (the transcripts are checked): skipped without the speech sample.
+    const wav_bytes = try testdata.speechFile(gpa, io);
+    defer gpa.free(wav_bytes);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();

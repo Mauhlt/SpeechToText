@@ -10,7 +10,8 @@
 //!   --cache <dir>       compiled-program cache (Core ML; default
 //!                       /tmp/stt-coreml)
 //!   --model <path>      default models/ggml-tiny.en.bin
-//!   --wav <path>        default testdata/hello.wav
+//!   --wav <path>        default testdata/speech.wav (the optional speech
+//!                       sample, git-ignored: stt.testdata.speech_path)
 //!   --gelu exact        erf GELU instead of the GPU's tanh form
 //!   --no-fp16           reference runtime: plain f32 math
 //!   --no-gpu            skip the GPU reference
@@ -33,7 +34,7 @@ const Args = struct {
     units: ce.ComputeUnits = .cpu_and_neural_engine,
     cache: []const u8 = "/tmp/stt-coreml",
     model: []const u8 = "models/ggml-tiny.en.bin",
-    wav: []const u8 = "testdata/hello.wav",
+    wav: []const u8 = stt.testdata.speech_path,
     gelu: lib.mil.GeluMode = .tanh_approximation,
     fp16: bool = true,
     gpu: bool = true,

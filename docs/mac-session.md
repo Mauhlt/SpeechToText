@@ -22,7 +22,11 @@ and the step list at the top of [src/coreml/dev/build.zig](../src/coreml/dev/bui
    be on GitHub. No QAIRT SDK or QNN headers are needed: the NPU engine is
    compiled only for aarch64-windows.
 3. `models/ggml-tiny.en.bin` in this repo ([README, Setup](../README.md#setup)
-   shows the download; use the tiny.en file). `testdata/hello.wav` is in the repo.
+   shows the download; use the tiny.en file), and a speech sample at
+   `testdata/speech.wav` (git-ignored, never committed: a short recording of
+   your own saying "Hello world. This is a test of speech recognition written
+   in pure Zig."; THIRD_PARTY.md, Test data). The repo ships no audio; without
+   the sample the transcription tests are skipped.
 4. For the iPhone (step 4): a development signing identity, a provisioning
    profile that lists the iPhone, the team id, and the iPhone connected with
    Developer Mode on.
@@ -76,8 +80,9 @@ Success, for every line above:
 
 - `Core ML graphs ... ready in N ms`, and on the second run both programs
   say `(cache)`.
-- `Core ML: "Hello World. This is a test of speech recognition written in Piersig."`,
-  the text the GPU and the reference interpreter give for tiny.en. A
+- `Core ML: "..."` with the text the GPU and the reference interpreter give
+  for tiny.en on the speech sample (for the removed hello.wav that was
+  `"Hello World. This is a test of speech recognition written in Piersig."`). A
   one-word difference on a Core ML run is fp16 rounding and worth noting,
   not a failure; empty or garbled text is a failure.
 - With `--adapter`: `setAdapter: ...`, then `base again: ... (same as before)`.
@@ -101,8 +106,9 @@ xcrun devicectl device install app --device <UDID> zig-out/ios/SttCoreML.app
 xcrun devicectl device process launch --console --device <UDID> <bundle id>
 ```
 
-The app bundles the tiny.en model and `hello.wav` (`-Dios-model=<path>` for
-another ggml file). It shows its log on screen, NSLogs it, and writes
+The app bundles the tiny.en model and the speech sample `testdata/speech.wav`
+(`-Dios-model=<path>` for another ggml file, `-Dios-wav=<path>` for another
+recording). It shows its log on screen, NSLogs it, and writes
 `Documents/stt-coreml.txt`; fetch it with `devicectl device copy from`
 exactly as in that README, with `--source Documents/stt-coreml.txt`.
 

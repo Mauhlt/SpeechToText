@@ -40,6 +40,12 @@ curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/
 > Weights attribution: those files are OpenAI's Whisper model weights, MIT-licensed
 > (Copyright (c) 2022 OpenAI). Keep that notice if you redistribute them.
 
+`zig build test`: the GPU tests need `models/ggml-tiny.en.bin` and an NVIDIA
+GPU; the transcription tests also need a speech sample of your own at
+`testdata/speech.wav` (git-ignored; [THIRD_PARTY.md](THIRD_PARTY.md#test-data)).
+Each is skipped without them. The repo ships no audio: other tests generate
+theirs (`stt.testdata`).
+
 ## Using it from Portal
 
 `stt.Home` is the one object Portal needs:

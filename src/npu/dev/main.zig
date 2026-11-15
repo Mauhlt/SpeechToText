@@ -6,7 +6,8 @@
 //!   --backend cpu|htp   QNN backend (default cpu)
 //!   --qnn <dir>         folder with the backend DLL (default: search)
 //!   --model <path>      default models/ggml-tiny.en.bin
-//!   --wav <path>        default testdata/hello.wav
+//!   --wav <path>        default testdata/speech.wav (the optional speech
+//!                       sample, git-ignored: stt.testdata.speech_path)
 //!   --cache <dir>       graph cache folder (default: none)
 //!   --mel               also compare the log-mel spectrogram (extra graph)
 //!   --no-gpu            skip the GPU reference
@@ -29,7 +30,7 @@ const Args = struct {
     backend: @FieldType(npu.Options, "backend") = .cpu,
     qnn: ?[]const u8 = null,
     model: []const u8 = "models/ggml-tiny.en.bin",
-    wav: []const u8 = "testdata/hello.wav",
+    wav: []const u8 = stt.testdata.speech_path,
     cache: ?[]const u8 = null,
     mel: bool = false,
     gpu: bool = true,

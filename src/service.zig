@@ -124,7 +124,10 @@ test "service: transcribe for a thin client, then learn from its fix" {
     const Model = @import("model.zig").Model;
     var model = Model.load(gpa, io, "models/ggml-tiny.en.bin") catch return error.SkipZigTest;
     defer model.deinit();
-    const wav_bytes = Io.Dir.cwd().readFileAlloc(io, "testdata/hello.wav", gpa, .limited(16 << 20)) catch return error.SkipZigTest;
+    const testdata = @import("testdata.zig");
+    // Needs real speech (the transcript is checked): skipped without the
+    // optional speech sample (testdata.speech_path), as without the model.
+    const wav_bytes = try testdata.speechFile(gpa, io);
     defer gpa.free(wav_bytes);
 
     var tmp = std.testing.tmpDir(.{});
@@ -143,7 +146,7 @@ test "service: transcribe for a thin client, then learn from its fix" {
     try std.testing.expect(r.id != 0);
     try std.testing.expect(std.mem.indexOf(u8, r.text, "Hello") != null);
 
-    const out = try svc.feedback(r.id, "Hello world. This is a test of speech recognition written in pure Zig.", true);
+    const out = try svc.feedback(r.id, testdata.speech_text, true);
     try std.testing.expect(out == .learned);
     try std.testing.expect(try svc.feedback(r.id, "again", true) == .unknown_id);
     try std.testing.expectError(error.BadAudio, svc.transcribeAudio(gpa, "not audio", "iphone"));

@@ -34,7 +34,7 @@
         "LICENSE",
         "THIRD_PARTY.md",
         "src",
-        // testdata/hello.wav: packages' tests (Portal's speech tests) use it.
-        "testdata",
+        // No testdata: the package ships no audio. Tests generate theirs
+        // (stt.testdata) or read an optional local speech sample.
     },
 }

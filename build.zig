@@ -113,7 +113,11 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/local_protocol_test.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "stt_local_build", .module = proto_opts.createModule() }},
+            .imports = &.{
+                .{ .name = "stt_local_build", .module = proto_opts.createModule() },
+                // stt.testdata: generated test audio and the optional speech sample.
+                .{ .name = "stt", .module = mod },
+            },
         }),
     });
     test_step.dependOn(&b.addRunArtifact(proto_tests).step);
@@ -124,7 +128,7 @@ pub fn build(b: *std.Build) void {
     // "stt" with -Dnpu itself must use one of them (Portal builds
     // stt-local). Nothing from the SDK ships: the laptop loads the QNN
     // runtime installed on it.
-    if (npu) qnnImport(b, mod, &.{ &local_exe.step, &exe.step, &mod_tests.step, &local_unit.step }, .{
+    if (npu) qnnImport(b, mod, &.{ &local_exe.step, &exe.step, &mod_tests.step, &local_unit.step, &proto_tests.step }, .{
         .target = target,
         .optimize = optimize,
         .sdk = sdk,

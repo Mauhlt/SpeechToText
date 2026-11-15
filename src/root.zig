@@ -38,6 +38,8 @@ pub const window = @import("window.zig");
 pub const service = @import("service.zig");
 pub const home = @import("home.zig");
 pub const local = @import("local.zig");
+/// Test audio: generated signals and the optional, git-ignored speech sample.
+pub const testdata = @import("testdata.zig");
 /// Laptop NPU (Snapdragon X Hexagon) backend, through QNN.
 pub const npu = struct {
     pub const engine = @import("npu/engine.zig");
@@ -84,6 +86,7 @@ test {
     _ = service;
     _ = schedule;
     _ = local;
+    _ = testdata;
     if (transcriber.coreml_enabled) {
         _ = coreml.frontend;
         _ = @import("coreml/tests.zig");

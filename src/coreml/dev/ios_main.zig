@@ -1,6 +1,7 @@
 //! SttCoreML.app: stt's Core ML engine on an iPhone. Transcribes the
-//! bundled testdata/hello.wav with the bundled model (default tiny.en) on
-//! the Neural Engine, then on the GPU and CPU compute units for
+//! bundled speech sample (testdata/speech.wav, git-ignored) with the
+//! bundled model (default tiny.en) on the Neural Engine, then on the GPU
+//! and CPU compute units for
 //! comparison, and tries an adapter swap. Shows the log in a text view,
 //! NSLogs it, and writes Documents/stt-coreml.txt. The first run generates
 //! and compiles the programs into Library/Caches (seconds); later runs load
@@ -109,7 +110,7 @@ fn run() !void {
     const res = objc.bundleResourcePath();
     const model_path = try std.fmt.allocPrint(gpa, "{s}/stt/model.bin", .{res});
     defer gpa.free(model_path);
-    const wav_path = try std.fmt.allocPrint(gpa, "{s}/stt/hello.wav", .{res});
+    const wav_path = try std.fmt.allocPrint(gpa, "{s}/stt/speech.wav", .{res});
     defer gpa.free(wav_path);
     const cache = try std.fmt.allocPrint(gpa, "{s}/stt-coreml", .{cachesDir()});
     defer gpa.free(cache);

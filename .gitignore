@@ -5,3 +5,6 @@ models/*.bin
 profile/
 *.tmp
 zig-pkg/
+# Optional speech sample for the transcription tests (testdata/speech.wav,
+# a recording of your own): never committed
+testdata/
