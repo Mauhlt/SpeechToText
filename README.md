@@ -89,8 +89,9 @@ var tr = try stt.Transcriber.init(gpa, &model, .{ .backend = .{ .coreml = .{ .ca
 `cache_dir` (compiled-graph cache; `stt.Local` defaults it to its profile dir)
 and `backend = .htp` (the NPU) or `.cpu` (QNN's CPU backend, for development).
 There is no CPU inference path of stt's own and no CPU compute threads.
-`Home` always uses the GPU. On Windows on Arm the cuda backend is compiled out
-(returns `error.CudaUnavailable`) and only `stt-local` is built.
+`Home` always uses the GPU. Every target builds both `stt` and `stt-local`; the
+cuda backend is compiled for Windows and Linux (x86_64 and aarch64) and
+returns `error.CudaUnavailable` where no NVIDIA driver is installed.
 
 `coreml` is built for iOS / macOS targets only: TranslateCoreML is a lazy
 dependency, so Windows and Linux builds never fetch or compile it (and
@@ -101,8 +102,11 @@ where it runs on TranslateCoreML's host reference interpreter:
 Apple-target checks and the iPhone test app are in `src/coreml/dev`, and the
 Mac / iPhone checklist is `docs/mac-session.md`.
 
-> Status: the NPU engine (`src/npu/engine.zig`) is being written; until it
-> lands, opening the NPU backend returns `error.NpuNotImplemented`.
+> Status: the NPU engine (`src/npu/engine.zig`) is compiled for aarch64-windows
+> only (or with `-Dnpu`, e.g. QNN's CPU backend on x86_64-windows); in other
+> builds opening the NPU backend returns `error.NpuUnavailable`. Its graphs
+> match the GPU on QnnCpu, but have not yet been run on a real Snapdragon NPU
+> (see NOTES.md, "NPU handover").
 
 ## The laptop: `stt.Local`
 
