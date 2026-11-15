@@ -15,8 +15,8 @@
         // headers. Lazy: only the NPU engine (aarch64-windows, see
         // build.zig) fetches it, and only for a step that compiles it.
         .TranslateNPU = .{
-            .url = "git+https://github.com/Mauhlt/TranslateNPU#ffe109e884dc74ae1a963d43f1ede3fb5b735d2d",
-            .hash = "translate_npu-0.1.0-Yrl2K_7DAADMUuwfmFfUYvF9iYHTl1Nl19vNfR93Uw1I",
+            .url = "git+https://github.com/Mauhlt/TranslateNPU#176954b48bf5250f4389b33b53a8d25a3b027bce",
+            .hash = "translate_npu-0.1.0-Yrl2K5zPAADGrUdkzSog4Jp92Gpqn6O1OrPoww2uzZ8y",
             .lazy = true,
         },
 
