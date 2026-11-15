@@ -110,3 +110,53 @@ test "Core ML programs on the reference interpreter transcribe like the GPU" {
     std.debug.print("coreml (reference, fp16 emulated): \"{s}\"\nGPU:                               \"{s}\"\n", .{ got, want });
     try std.testing.expectEqualStrings(want, got);
 }
+
+test "Local on Core ML (reference runtime): an update swaps the adapter in without reopening" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const Local = @import("../local.zig").Local;
+    const Profile = @import("../profile.zig").Profile;
+    const sync = @import("../sync.zig");
+    Io.Dir.cwd().access(io, model_path, .{}) catch return error.SkipZigTest;
+    const samples = try loadAudio();
+    defer gpa.free(samples);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const ddir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/phone", .{tmp.sub_path});
+    defer gpa.free(ddir);
+    const hdir = try std.fmt.allocPrint(gpa, ".zig-cache/tmp/{s}/home", .{tmp.sub_path});
+    defer gpa.free(hdir);
+
+    const l = try Local.open(gpa, io, .{
+        .model_path = model_path,
+        .profile_dir = ddir,
+        .backend = .coreml,
+        .coreml = .{ .runtime = .reference },
+        .device_name = "iphone",
+    });
+    defer l.close();
+    try std.testing.expectEqual(@as(u32, 0), l.adapterVersion());
+    try std.testing.expectEqual(.coreml, l.status().backend);
+
+    // Home's version 1: an adapter (B zero: the transcript must not change).
+    {
+        var hp = try Profile.load(gpa, io, hdir);
+        defer hp.deinit();
+        var ad = try Adapter.init(gpa, &l.model, 4, 8, 1);
+        defer ad.deinit(gpa);
+        try ad.save(gpa, io, try hp.path("adapter.bin"));
+        hp.version = 1;
+        try hp.saveState();
+        const up = (try sync.exportUpdate(gpa, &hp, l.status().profile_version)).?;
+        defer gpa.free(up);
+        try std.testing.expectEqual(@as(u32, 1), try l.importUpdate(gpa, up));
+        try std.testing.expectEqual(@as(u32, 1), try l.importUpdate(gpa, up)); // idempotent
+    }
+    try std.testing.expectEqual(@as(u32, 1), l.adapterVersion());
+    try std.testing.expectEqual(@as(u32, 1), l.status().profile_version);
+    const r = try l.transcribePcm(gpa, samples);
+    defer gpa.free(r.text);
+    std.debug.print("Local coreml (reference) with adapter v1: \"{s}\"\n", .{r.text});
+    try std.testing.expect(std.mem.indexOf(u8, r.text, "Hello") != null);
+}

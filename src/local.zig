@@ -1,5 +1,6 @@
 //! The laptop: speech-to-text that runs locally on the laptop's NPU
-//! (Snapdragon X Hexagon, through QNN). Laptop audio never leaves the laptop;
+//! (Snapdragon X Hexagon, through QNN), or on the iPhone through Core ML
+//! (`backend = .coreml`, Apple builds). Device audio never leaves the device;
 //! only the training samples made from your feedback go home, as sync
 //! bundles, and adapter updates come back (`importUpdate`).
 //!
@@ -46,7 +47,15 @@ pub const Backend = enum {
     npu,
     /// An NVIDIA GPU: for testing the laptop flow on a desktop.
     cuda,
+    /// Core ML (the iPhone, a Mac: Neural Engine first). `coreml` options
+    /// apply. Only in builds with the Core ML backend
+    /// (`transcriber.coreml_enabled`); elsewhere `open` returns
+    /// error.CoreMLUnavailable.
+    coreml,
 };
+
+/// Core ML options (coreml/engine.zig), or nothing in builds without it.
+pub const CoreMLOptions = if (transcriber.coreml_enabled) @import("coreml/engine.zig").Options else struct {};
 
 pub const Config = struct {
     /// The base model (the `stt-model` data package). Read only.
@@ -65,6 +74,9 @@ pub const Config = struct {
     backend: Backend = .npu,
     /// NPU options. `cache_dir` = null means `profile_dir`.
     npu: npu.Options = .{},
+    /// Core ML options. `cache_dir` = null means `profile_dir` (where the
+    /// generated and compiled programs go; the iPhone passes its Caches).
+    coreml: CoreMLOptions = .{},
     /// Name this device's samples carry in sync bundles.
     device_name: []const u8 = "laptop",
     service: service.Options = .{},
@@ -120,6 +132,11 @@ pub const Local = struct {
                 if (o.cache_dir == null) o.cache_dir = cfg.profile_dir;
                 break :blk .{ .npu = o };
             },
+            .coreml => if (transcriber.coreml_enabled) blk: {
+                var o = cfg.coreml;
+                if (o.cache_dir == null) o.cache_dir = cfg.profile_dir;
+                break :blk .{ .coreml = o };
+            } else return error.CoreMLUnavailable,
         };
         l.tr = try Transcriber.init(gpa, &l.model, topts);
         errdefer l.tr.deinit();
