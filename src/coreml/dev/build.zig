@@ -1,5 +1,6 @@
 //! coreml-dev: development checks of the Core ML engine. A separate build
-//! so the library's build.zig stays small:
+//! so the library's build.zig stays small (and so that only this build, or
+//! an iOS / macOS target, ever fetches TranslateCoreML):
 //!
 //!   cd src/coreml/dev
 //!   zig build                        -> zig-out/bin/coreml-dev (this host;
@@ -7,6 +8,9 @@
 //!   zig build -Dtarget=aarch64-macos -> a Mac binary (Core ML is opened with
 //!                                       dlopen, so this cross-links from Windows)
 //!   zig build run -- [args]          (runs from the SpeechToText folder)
+//!   zig build apple-check            stt with the Core ML backend for
+//!                                    aarch64-ios and aarch64-macos (objects
+//!                                    only, no SDK)
 //!   zig build ios-check              SttCoreML.app's code for aarch64-ios
 //!                                    (object only, no SDK)
 //!   zig build ios                    (Mac) zig-out/ios/SttCoreML.app, with
@@ -19,14 +23,13 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    const stt = b.dependency("stt", .{ .target = target });
     const exe = b.addExecutable(.{
         .name = "coreml-dev",
         .root_module = b.createModule(.{
             .root_source_file = b.path("main.zig"),
             .target = target,
-            .optimize = .ReleaseFast,
-            .imports = &.{.{ .name = "stt", .module = stt.module("stt") }},
+            .optimize = .fast,
+            .imports = &.{.{ .name = "stt", .module = sttModule(b, target, .fast) }},
         }),
     });
     b.installArtifact(exe);
@@ -35,7 +38,34 @@ pub fn build(b: *std.Build) void {
     run.addPassthruArgs();
     b.step("run", "Run coreml-dev from the SpeechToText folder").dependOn(&run.step);
 
+    // The library with the Core ML backend for the Apple targets: every
+    // engine method and Transcriber with .coreml analysed (apple_check.zig).
+    const apple_check = b.step("apple-check", "Compile stt with the Core ML backend for aarch64-ios and aarch64-macos (objects only)");
+    for ([_]struct { name: []const u8, t: std.Build.ResolvedTarget }{
+        .{ .name = "stt-ios-check", .t = iosTarget(b) },
+        .{ .name = "stt-macos-check", .t = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos, .os_version_min = .{ .semver = .{ .major = 14, .minor = 0, .patch = 0 } } }) },
+    }) |c| {
+        const root = b.createModule(.{
+            .root_source_file = b.path("apple_check.zig"),
+            .target = c.t,
+            .optimize = .debug,
+            .link_libc = true,
+            .imports = &.{.{ .name = "stt", .module = sttModule(b, c.t, .debug) }},
+        });
+        apple_check.dependOn(&b.addObject(.{ .name = c.name, .root_module = root }).step);
+    }
+
     addIos(b);
+}
+
+/// stt with the Core ML backend (on for every target here, so a host build
+/// runs it on the reference interpreter).
+fn sttModule(b: *std.Build, t: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
+    return b.dependency("stt", .{ .target = t, .optimize = optimize, .coreml = true }).module("stt");
+}
+
+fn iosTarget(b: *std.Build) std.Build.ResolvedTarget {
+    return b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .ios, .os_version_min = .{ .semver = .{ .major = 17, .minor = 0, .patch = 0 } } });
 }
 
 fn addIos(b: *std.Build) void {
@@ -46,13 +76,12 @@ fn addIos(b: *std.Build) void {
         std.mem.trim(u8, b.run(&.{ "xcrun", "--sdk", "iphoneos", "--show-sdk-path" }), " \r\n")
     else
         null;
-    const t = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .ios, .os_version_min = .{ .semver = .{ .major = 17, .minor = 0, .patch = 0 } } });
-    const tools = b.dependency("TranslateCoreML", .{});
-    const lib_run = b.addRunArtifact(tools.artifact("ios-zig-lib"));
-    lib_run.addDirectoryArg(.zig_lib);
-    const zig_lib = lib_run.addOutputDirectoryArg("zig-lib");
+    const t = iosTarget(b);
+    // TranslateCoreML's signing tool, through stt's (lazy) dependency so the
+    // pin lives in one place: null until fetched, then build() runs again.
+    const tools = b.dependency("stt", .{}).builder.lazyDependency("TranslateCoreML", .{}) orelse return;
 
-    const check = b.addObject(.{ .name = "sttcoreml-ios-check", .root_module = appModule(b, t, .Debug), .zig_lib_dir = zig_lib });
+    const check = b.addObject(.{ .name = "sttcoreml-ios-check", .root_module = appModule(b, t, .debug) });
     b.step("ios-check", "Compile SttCoreML.app's code for aarch64-ios (object only)").dependOn(&check.step);
 
     const app_step = b.step("ios", "On a Mac: build zig-out/ios/SttCoreML.app");
@@ -63,13 +92,13 @@ fn addIos(b: *std.Build) void {
         sign_step.dependOn(&fail.step);
         return;
     };
-    const mod = appModule(b, t, .ReleaseFast);
+    const mod = appModule(b, t, .fast);
     mod.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk_path, "System/Library/Frameworks" }) });
     mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sdk_path, "usr/lib" }) });
     mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk_path, "usr/include" }) });
     for ([_][]const u8{ "UIKit", "Foundation" }) |fw| mod.linkFramework(fw, .{});
     mod.linkSystemLibrary("objc", .{});
-    const exe = b.addExecutable(.{ .name = "SttCoreML", .root_module = mod, .zig_lib_dir = zig_lib });
+    const exe = b.addExecutable(.{ .name = "SttCoreML", .root_module = mod });
     exe.setLibCFile(b.addWriteFiles().add("libc-ios.txt", b.fmt(
         \\include_dir={s}/usr/include
         \\sys_include_dir={s}/usr/include
@@ -99,14 +128,13 @@ fn addIos(b: *std.Build) void {
     sign_step.dependOn(&install_signed.step);
 }
 
-fn appModule(b: *std.Build, t: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const stt = b.dependency("stt", .{ .target = t, .optimize = optimize });
+fn appModule(b: *std.Build, t: std.Build.ResolvedTarget, optimize: std.lang.Optimize) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("ios_main.zig"),
         .target = t,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "stt", .module = stt.module("stt") }},
+        .imports = &.{.{ .name = "stt", .module = sttModule(b, t, optimize) }},
     });
 }
 

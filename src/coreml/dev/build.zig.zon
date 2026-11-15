@@ -4,14 +4,15 @@
     .fingerprint = 0xf88fddf41be676eb,
     .minimum_zig_version = "0.18.0-dev.4+5a23bf4b2",
     .dependencies = .{
-        // The SpeechToText library itself (this folder is inside it).
+        // The SpeechToText library itself (this folder is inside it). Its
+        // lazy TranslateCoreML dependency also provides the signing tool.
         .stt = .{ .path = "../../.." },
-        // iOS build helpers (patched Zig lib dir, signing tool).
-        .TranslateCoreML = .{ .path = "../../../../TranslateCoreML" },
     },
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "main.zig",
+        "ios_main.zig",
+        "apple_check.zig",
     },
 }

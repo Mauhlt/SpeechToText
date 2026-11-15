@@ -8,8 +8,13 @@
         .Audio = .{ .path = "../Audio" },
         // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK headers.
         .TranslateNPU = .{ .path = "../TranslateNPU" },
-        // Core ML: ML Program writer, host reference interpreter, runtime bindings (iPhone / Mac).
-        .TranslateCoreML = .{ .path = "../TranslateCoreML" },
+        // Core ML: ML Program writer, host reference interpreter, runtime bindings
+        // (iPhone / Mac). Lazy: fetched only for iOS / macOS targets or -Dcoreml.
+        .TranslateCoreML = .{
+            .url = "git+https://github.com/Mauhlt/TranslateCoreML#5d4a1f4d104aa5221357ad1da9538f80f0422d35",
+            .hash = "translate_coreml-0.1.0-92kNGzZoAwBzbe7cN-JNFTznkZn3luJ24H8OZt5YVAFH",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

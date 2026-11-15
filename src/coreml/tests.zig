@@ -1,4 +1,5 @@
-//! Core ML backend checks that run on any OS. They need
+//! Core ML backend checks that run on any OS (built for iOS / macOS targets,
+//! elsewhere with `zig build test -Dcoreml`). They need
 //! models/ggml-tiny.en.bin and testdata/hello.wav (skipped otherwise); the
 //! comparisons with the GPU also need an NVIDIA GPU (skipped otherwise).
 const std = @import("std");

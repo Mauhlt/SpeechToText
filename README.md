@@ -85,6 +85,15 @@ There is no CPU inference path of stt's own and no CPU compute threads.
 `Home` always uses the GPU. On Windows on Arm the cuda backend is compiled out
 (returns `error.CudaUnavailable`) and only `stt-local` is built.
 
+`coreml` is built for iOS / macOS targets only: TranslateCoreML is a lazy
+dependency, so Windows and Linux builds never fetch or compile it (and
+`.coreml` does not compile there). `-Dcoreml` includes it on other targets,
+where it runs on TranslateCoreML's host reference interpreter:
+`zig build test -Dcoreml` checks the programs against the GPU. Options
+(`cache_dir`, `compute_units`, `runtime`, ...) are in `src/coreml/engine.zig`;
+Apple-target checks and the iPhone test app are in `src/coreml/dev`, and the
+Mac / iPhone checklist is `docs/mac-session.md`.
+
 > Status: the NPU engine (`src/npu/engine.zig`) is being written; until it
 > lands, opening the NPU backend returns `error.NpuNotImplemented`.
 
@@ -302,7 +311,7 @@ Getting data to the GPU:
 | `src/schedule.zig`      | training window, status and events |
 | `src/training.zig`      | one training run: collect samples, train, record the version |
 | `src/service.zig`       | transcription + feedback window for Portal clients |
-| `src/transcriber.zig`   | greedy decoding over the GPU or NPU engine |
+| `src/transcriber.zig`   | greedy decoding over the GPU, NPU or Core ML engine |
 | `src/gpu/kernels.zig`   | GPU kernels (Zig → PTX): matmul, flash attention, log-mel, backward pass, Muon/Adam |
 | `src/gpu/engine.zig`    | GPU weights, uploads, encoder/decoder, adapter merge |
 | `src/gpu/trainer.zig`   | LoRA forward/backward and optimizer steps on the GPU |

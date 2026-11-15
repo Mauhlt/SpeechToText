@@ -43,13 +43,14 @@ pub const npu = struct {
     pub const engine = @import("npu/engine.zig");
 };
 /// iPhone / Mac backend: Core ML (Neural Engine), from ML Programs written in Zig.
-pub const coreml = struct {
+/// Empty unless the build includes it (`transcriber.coreml_enabled`).
+pub const coreml = if (transcriber.coreml_enabled) struct {
     pub const engine = @import("coreml/engine.zig");
     pub const net = @import("coreml/net.zig");
     pub const frontend = @import("coreml/frontend.zig");
     /// TranslateCoreML (MIL builder, package writer, reference interpreter, runtime).
     pub const lib = @import("coreml");
-};
+} else struct {};
 pub const gpu = struct {
     pub const cuda = @import("gpu/cuda.zig");
     pub const engine = @import("gpu/engine.zig");
@@ -77,7 +78,9 @@ test {
     _ = service;
     _ = schedule;
     _ = local;
-    _ = coreml.frontend;
-    _ = @import("coreml/tests.zig");
+    if (transcriber.coreml_enabled) {
+        _ = coreml.frontend;
+        _ = @import("coreml/tests.zig");
+    }
     _ = @import("tests.zig");
 }

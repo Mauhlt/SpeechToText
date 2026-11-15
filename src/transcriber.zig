@@ -5,6 +5,9 @@
 //!   .cuda   NVIDIA GPU (gpu/engine.zig), the default; the home desktop.
 //!   .npu    Snapdragon X Hexagon NPU through QNN (npu/engine.zig); the laptop.
 //!   .coreml Core ML (coreml/engine.zig): the iPhone / Mac, Neural Engine first.
+//!           Built for iOS / macOS targets (elsewhere only with -Dcoreml, on
+//!           the reference interpreter); otherwise its payload is `noreturn`,
+//!           so selecting it is a compile error.
 //!
 //! Both engines expose the same encode/step/pick interface, and this file's
 //! decoding loop drives either one. There is no CPU fallback (and no CPU
@@ -18,7 +21,10 @@ const Tokenizer = @import("bpe.zig").Tokenizer;
 const Adapter = @import("adapter.zig").Adapter;
 const gpu = @import("gpu/engine.zig");
 const npu = @import("npu/engine.zig");
-const coreml_engine = @import("coreml/engine.zig");
+/// Whether this build includes the Core ML backend (build.zig: iOS / macOS
+/// targets, or -Dcoreml). Without it, TranslateCoreML is never fetched or compiled.
+pub const coreml_enabled = @import("stt_options").coreml;
+const coreml_engine = if (coreml_enabled) @import("coreml/engine.zig") else struct {};
 const Allocator = std.mem.Allocator;
 
 /// Which accelerator runs the model.
@@ -29,7 +35,7 @@ pub const Backend = union(enum) {
     npu: npu.Options,
     /// Core ML (iPhone / Mac: Neural Engine, GPU or CPU as Core ML places
     /// each op), from ML Programs generated in Zig (coreml/engine.zig).
-    coreml: coreml_engine.Options,
+    coreml: if (coreml_enabled) coreml_engine.Options else noreturn,
 };
 
 pub const Options = struct {
@@ -48,7 +54,7 @@ pub const Options = struct {
 pub const Engine = union(enum) {
     gpu: *gpu.Engine,
     npu: *npu.Engine,
-    coreml: *coreml_engine.Engine,
+    coreml: if (coreml_enabled) *coreml_engine.Engine else noreturn,
 
     pub fn init(gpa: Allocator, model: *const Model, backend: Backend) !Engine {
         return switch (backend) {
