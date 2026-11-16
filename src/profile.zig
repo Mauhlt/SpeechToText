@@ -567,6 +567,39 @@ pub const Profile = struct {
         return rep;
     }
 
+    /// Every device name something is recorded under: samples (their
+    /// .meta), rules and words, each name once, in no set order. Never ""
+    /// (this device, or edited by hand). Lets a host forget the sources
+    /// it no longer knows (`forgetSource`). Caller frees with
+    /// `freeSources`.
+    pub fn sources(p: *Profile, gpa: Allocator) ![][]const u8 {
+        var set: std.StringArrayHashMapUnmanaged(void) = .empty;
+        defer set.deinit(gpa);
+        errdefer for (set.keys()) |k| gpa.free(k);
+        var ws = p.word_sources.valueIterator();
+        while (ws.next()) |s| try addSource(gpa, &set, s.*);
+        for (p.rules.items) |r| try addSource(gpa, &set, r.source);
+        const ids = try p.sampleIds(gpa);
+        defer gpa.free(ids);
+        var name_buf: [32]u8 = undefined;
+        for (ids) |id| {
+            const rel = std.fmt.bufPrint(&name_buf, "samples/{d:0>6}.meta", .{id}) catch unreachable;
+            // As `forgetSource` reads them: a sample without a readable
+            // .meta is never matched there either.
+            const meta_text = Io.Dir.cwd().readFileAlloc(p.io, try p.path(rel), gpa, .limited(64 * 1024)) catch continue;
+            defer gpa.free(meta_text);
+            try addSource(gpa, &set, SampleMeta.parse(meta_text).source);
+        }
+        return gpa.dupe([]const u8, set.keys());
+    }
+
+    fn addSource(gpa: Allocator, set: *std.StringArrayHashMapUnmanaged(void), name: []const u8) !void {
+        if (name.len == 0 or set.contains(name)) return;
+        const owned = try gpa.dupe(u8, name);
+        errdefer gpa.free(owned);
+        try set.put(gpa, owned, {});
+    }
+
     /// Deletes one sample's files, .txt first. Returns the bytes freed.
     fn deleteSample(p: *Profile, id: u32) !u64 {
         var freed: u64 = 0;
@@ -611,6 +644,12 @@ pub const Profile = struct {
         return list.toOwnedSlice(gpa);
     }
 };
+
+/// Frees what `Profile.sources` (or `Home.sources`) returned.
+pub fn freeSources(gpa: Allocator, list: []const []const u8) void {
+    for (list) |s| gpa.free(s);
+    gpa.free(list);
+}
 
 /// The sample id of a file in samples/ ("000012.wav" -> 12), or null.
 fn sampleIdOf(name: []const u8) ?u32 {
@@ -942,6 +981,53 @@ test "provenance: sources are recorded, persisted, and forgotten" {
     var p2 = try Profile.load(gpa, io, dir);
     defer p2.deinit();
     try std.testing.expectEqual(@as(usize, 1), p2.rules.items.len);
+}
+
+fn hasSource(list: []const []const u8, name: []const u8) bool {
+    for (list) |s| if (std.mem.eql(u8, s, name)) return true;
+    return false;
+}
+
+test "sources: every device recorded by samples, rules or words, once; none after forgetSource" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir = try testDir(gpa, &tmp);
+    defer gpa.free(dir);
+    const audio: [1600]f32 = @splat(0);
+    var p = try Profile.load(gpa, io, dir);
+    defer p.deinit();
+    const empty = try p.sources(gpa);
+    defer freeSources(gpa, empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    // A sample, rule and words from the laptop; a sample only from the
+    // phone (a confirmation); words only from the tablet; this device's own
+    // sample (no source).
+    _ = try p.feedbackFrom(gpa, &audio, "written in Puresig.", .{ .text = "written in pure Zig.", .success = true }, "laptop");
+    _ = try p.feedbackFrom(gpa, &audio, "hello there", .{ .text = "hello there", .success = true }, "phone");
+    var budget: Budget = .{};
+    _ = try p.applyLesson(.{ .words = &.{"Quokka"} }, "tablet", &budget);
+    _ = try p.feedback(gpa, &audio, "my own sample", .{ .text = "my own sample", .success = true });
+    {
+        const all = try p.sources(gpa);
+        defer freeSources(gpa, all);
+        try std.testing.expectEqual(@as(usize, 3), all.len);
+        for ([_][]const u8{ "laptop", "phone", "tablet" }) |n| try std.testing.expect(hasSource(all, n));
+    }
+    // Forgotten: listed no more; the others stay.
+    _ = try p.forgetSource("laptop");
+    _ = try p.forgetSource("tablet");
+    const left = try p.sources(gpa);
+    defer freeSources(gpa, left);
+    try std.testing.expectEqual(@as(usize, 1), left.len);
+    try std.testing.expectEqualStrings("phone", left[0]);
+    // No leak when allocation fails part-way.
+    var i: usize = 0;
+    while (i < 8) : (i += 1) {
+        var fa: std.testing.FailingAllocator = .init(gpa, .{ .fail_index = i });
+        if (p.sources(fa.allocator())) |l| freeSources(fa.allocator(), l) else |_| {}
+    }
 }
 
 test "learning caps: totals stop growth, existing words are counted not copied" {

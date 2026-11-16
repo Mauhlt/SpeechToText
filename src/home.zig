@@ -212,6 +212,17 @@ pub const Home = struct {
         return r;
     }
 
+    /// Every device something is recorded under (samples, rules, words),
+    /// each once; never "" (this device, or edited by hand). A host
+    /// compares it with the devices it still knows and forgets the rest
+    /// (`forgetSource`), e.g. ones unpaired while it wasn't running. Free
+    /// with `profile.freeSources`.
+    pub fn sources(h: *Home, gpa: Allocator) ![][]const u8 {
+        h.lock.lockUncancelable(h.io);
+        defer h.lock.unlock(h.io);
+        return h.profile.sources(gpa);
+    }
+
     // ------------------------------------------------------------ storage
 
     /// Bytes the profile folder holds (see `Profile.profileBytes`).

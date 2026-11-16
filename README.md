@@ -285,8 +285,11 @@ in `Local`) before anything is written, and its version is recorded last.
 **Provenance.** Every learned rule and word records the device that taught it
 (`sources.txt`, beside `rules.txt`; samples record it in their `.meta`).
 `home.forgetSource(device)` (or `Profile.forgetSource`) drops that device's
-samples, rules and words, e.g. when it is unpaired. What a previous training
-run already learned from them stays in the adapter until the next run.
+samples, rules and words, e.g. when it is unpaired. `home.sources(gpa)` (or
+`Profile.sources`) lists every device something is recorded under, each once,
+so a host can forget the ones it no longer knows (free the list with
+`profile.freeSources`). What a previous training run already learned from them
+stays in the adapter until the next run.
 
 **Storage cap:** once home samples exceed 50 GB (`StoragePolicy.max_bytes`),
 the oldest audio that is already trained in is deleted after a training run
