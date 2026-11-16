@@ -8,23 +8,23 @@
     .dependencies = .{
         // Audio file decoding/encoding (WAV, MP3, QOA).
         .Audio = .{
-            .url = "git+https://github.com/Mauhlt/Audio#3371aecfe3969b385ef4ec5935c6ca926971016b",
-            .hash = "Audio-0.0.0-WaiWyGroUADN5wFXgx_GHbPGErZqBlUSN9w7Is93pyzw",
+            .url = "git+https://github.com/Mauhlt/Audio#ad1f59fdce29bccbaef7cfb9ff955124ee0af0bc",
+            .hash = "Audio-0.0.0-WaiWyDWpBABEDQ1vB2s7A5qzyMLReP--rsAABPb43qZ5",
         },
         // QNN (Snapdragon NPU) bindings, generated from the QAIRT SDK
         // headers. Lazy: only the NPU engine (aarch64-windows, see
         // build.zig) fetches it, and only for a step that compiles it.
         .TranslateNPU = .{
-            .url = "git+https://github.com/Mauhlt/TranslateNPU#176954b48bf5250f4389b33b53a8d25a3b027bce",
-            .hash = "translate_npu-0.1.0-Yrl2K5zPAADGrUdkzSog4Jp92Gpqn6O1OrPoww2uzZ8y",
+            .url = "git+https://github.com/Mauhlt/TranslateNPU#1121651243d5ef0e46f2100037ac04b392665305",
+            .hash = "translate_npu-0.1.0-Yrl2K1nkAAAAEcAPDdJUCzlFGRoKPsxHH46BJVUI8rYv",
             .lazy = true,
         },
 
         // Core ML: ML Program writer, host reference interpreter, runtime bindings
         // (iPhone / Mac). Lazy: fetched only for iOS / macOS targets or -Dcoreml.
         .TranslateCoreML = .{
-            .url = "git+https://github.com/Mauhlt/TranslateCoreML#5d4a1f4d104aa5221357ad1da9538f80f0422d35",
-            .hash = "translate_coreml-0.1.0-92kNGzZoAwBzbe7cN-JNFTznkZn3luJ24H8OZt5YVAFH",
+            .url = "git+https://github.com/Mauhlt/TranslateCoreML#dfa822ae476bf05b98f65f9e0eff7bd2bff2b3da",
+            .hash = "translate_coreml-0.1.0-92kNG2lzAwCUCIQc2bpY3QLSpBsToKPdQ96Noq5q8aJa",
             .lazy = true,
         },
     },
